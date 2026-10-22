@@ -42,10 +42,14 @@ def fetch_entry(entry: str) -> tuple[str, list[ImageSet]]:
     sets = [ImageSet(s['name'], s['directory'], s['category'], s['data_format'], s['num_images_or_tilt_series']) for s in data['imagesets']]
     return data['title'], sets
 
-# list_files: use FTP MLSD listing to retrieve files in an image set directory
+# list_files: files in an image set directory, sizes parsed from an FTP LIST
 def list_files(entry: str, directory: str) -> list[RemoteFile]:
     path = f'/empiar/world_availability/{entry_number(entry)}/{directory}'
+    lines: list[str] = []
     with ftplib.FTP(FTP_HOST, timeout=60) as ftp:
         ftp.login()
         ftp.cwd(path)
-        return [RemoteFile(name, int(facts['size'])) for name, facts in ftp.mlsd(facts=['size', 'type']) if facts.get('type') == 'file']
+        ftp.retrlines('LIST', lines.append)
+    # unix ls -l format: perms links owner group size month day time/year name, names may hold spaces
+    rows = [line.split(maxsplit=8) for line in lines if line.startswith('-')]
+    return [RemoteFile(row[8], int(row[4])) for row in rows]
