@@ -11,9 +11,11 @@ from rich.console import Console
 from rich.table import Table
 
 # Import internal streamem objects
-from streamem.plan import GB
 from streamem.utils.config import SubDataset
 from streamem.utils.empiar import ImageSet
+
+# GB: bytes per gigabyte (used for budgets and display)
+GB = 1024**3
 
 # console: instantiate shared rich console
 console = Console()
