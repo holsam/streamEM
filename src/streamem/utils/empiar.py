@@ -3,8 +3,9 @@ streamem: EMPIAR REST API and FTP access
 '''
 
 # Import external dependencies
-import ftplib, json, re, urllib.request
+import ftplib, json, re, threading, urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 # FTP_HOST: EMPIAR public FTP server
 FTP_HOST = 'ftp.ebi.ac.uk'
@@ -53,3 +54,21 @@ def list_files(entry: str, directory: str) -> list[RemoteFile]:
     # unix ls -l format: perms links owner group size month day time/year name, names may hold spaces
     rows = [line.split(maxsplit=8) for line in lines if line.startswith('-')]
     return [RemoteFile(row[8], int(row[4])) for row in rows]
+
+# download: fetch one file over FTP to dest, aborting between blocks once stop is set
+def download(entry: str, directory: str, name: str, dest: Path, stop: threading.Event) -> None:
+    part = dest.with_name(dest.name + '.part')
+    # write: stream one block to disk
+    def write(block: bytes) -> None:
+        if stop.is_set():
+            raise InterruptedError
+        out.write(block)
+    try:
+        with ftplib.FTP(FTP_HOST, timeout=60) as ftp, part.open('wb') as out:
+            ftp.login()
+            ftp.cwd(f'/empiar/world_availability/{entry_number(entry)}/{directory}')
+            ftp.retrbinary(f'RETR {name}', write, blocksize=1 << 20)
+        part.rename(dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
