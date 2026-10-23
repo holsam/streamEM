@@ -90,3 +90,7 @@ def _ask_number(message: str, default: float, kind: Callable[[str], float], mini
             return f'must be at most {maximum}'
         return True
     return questionary.text(message, default=str(default), validate=check).unsafe_ask()
+
+# report_counts: one-line progress of files per status
+def report_counts(counts: dict[str, int]) -> None:
+    console.print(' '.join(f'{status}={n}' for status, n in counts.items()))
