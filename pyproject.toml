@@ -1,17 +1,28 @@
 [project]
 name = "streamem"
-version = "0.0.0"
+version = "0.1.0"
 description = "Chunked processing of EMPIAR data."
 readme = "README.md"
 authors = [
     { name = "Sam Holland", email = "hol_sam@icloud.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "pydantic>=2.14.1",
+    "questionary>=2.1.1",
+    "rich>=15.0.0",
+    "tomli-w>=1.2.0",
+    "typer>=0.27.3",
+]
 
 [project.scripts]
-streamem = "streamem:main"
+streamem = "streamem.cli:app"
 
 [build-system]
 requires = ["uv_build>=0.11.26,<0.12.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
