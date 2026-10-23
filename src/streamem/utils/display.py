@@ -9,10 +9,12 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
+from typing import get_args
 
 # Import internal streamem objects
 from streamem.utils.config import SubDataset
 from streamem.utils.empiar import ImageSet
+from streamem.utils.manifest import Status
 
 # GB: bytes per gigabyte (used for budgets and display)
 GB = 1024**3
@@ -94,3 +96,23 @@ def _ask_number(message: str, default: float, kind: Callable[[str], float], mini
 # report_counts: one-line progress of files per status
 def report_counts(counts: dict[str, int]) -> None:
     console.print(' '.join(f'{status}={n}' for status, n in counts.items()))
+
+# show_status: per sub-dataset counts by status and GB done against total
+def show_status(summary: dict[str, dict[str, tuple[int, int]]]) -> None:
+    table = Table('sub-dataset', *get_args(Status), 'done GB', 'total GB')
+    for sub, by_status in summary.items():
+        done_gb = by_status['done'][1] / GB
+        total_gb = sum(size for _, size in by_status.values()) / GB
+        table.add_row(sub, *(str(by_status[s][0]) for s in get_args(Status)), f'{done_gb:.1f}', f'{total_gb:.1f}')
+    console.print(table)
+
+# show_failures: first limit failed files with their errors, then a count of the rest
+def show_failures(failures: list[tuple[str, str, str | None]], limit: int) -> None:
+    if not failures:
+        return
+    table = Table('sub-dataset', 'file', 'error')
+    for sub, name, error in failures[:limit]:
+        table.add_row(sub, name, error or '')
+    console.print(table)
+    if len(failures) > limit:
+        console.print(f'... and {len(failures) - limit} more failed')
