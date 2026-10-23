@@ -37,3 +37,25 @@ def test_retry_failed(tmp_path: Path) -> None:
     manifest.finish('s', 'a', 'failed', 'boom')
     manifest.retry_failed()
     assert manifest.counts()['pending'] == 1
+
+# test_summary_and_failures: counts and bytes per sub-dataset, failures carry their error
+def test_summary_and_failures(tmp_path: Path) -> None:
+    manifest = Manifest(tmp_path / 'm.db')
+    manifest.add('s', [RemoteFile('a', 10), RemoteFile('b', 20)])
+    manifest.claim()
+    manifest.finish('s', 'a', 'done')
+    manifest.claim()
+    manifest.finish('s', 'b', 'failed', 'boom')
+    summary = manifest.summary()['s']
+    assert summary['done'] == (1, 10)
+    assert summary['failed'] == (1, 20)
+    assert summary['pending'] == (0, 0)
+    assert manifest.failures() == [('s', 'b', 'boom')]
+
+# test_read_only_open: recover=False leaves running rows alone
+def test_read_only_open(tmp_path: Path) -> None:
+    manifest = Manifest(tmp_path / 'm.db')
+    manifest.add('s', [RemoteFile('a', 1)])
+    manifest.claim()
+    assert Manifest(tmp_path / 'm.db', recover=False).counts()['running'] == 1
+    assert Manifest(tmp_path / 'm.db').counts()['pending'] == 1
