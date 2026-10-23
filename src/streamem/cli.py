@@ -10,6 +10,7 @@ from typing import Annotated
 # Import internal streamem objects
 from streamem.plan import plan_run
 from streamem.run import exec_run
+from streamem.status import check_status
 
 # app: typer entry point
 app = typer.Typer(
@@ -41,3 +42,20 @@ def run(
     Execute a planned run using a configuration TOML file.
     '''
     exec_run(config_path=config_path, retry_failed=retry_failed)
+
+# status: show progress of a run
+@app.command('status')
+def status(
+    config_path: Annotated[
+        Path,
+        typer.Argument(help='Path to configuration TOML file.')
+    ],
+    limit: Annotated[
+        int,
+        typer.Option('--limit', help='Maximum number of failed files to list.')
+    ] = 20,
+) -> None:
+    '''
+    Check the progress of a run from its manifest.
+    '''
+    check_status(config_path=config_path, limit=limit)
