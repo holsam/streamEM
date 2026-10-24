@@ -9,9 +9,13 @@ from pathlib import Path
 # Import internal streamem objects
 from streamem.utils.config import Config, SubDataset, write_config
 from streamem.utils.display import (
-    GB, ask_confirm, ask_float, ask_int, ask_path, ask_text, busy, choose, fail, show_entry, summary, wrote,
+    GB, ask_confirm, ask_float, ask_int, ask_path, ask_text, busy, choose, fail, framed, saved, say, section,
+    show_dataset, show_entry, show_preview,
 )
-from streamem.utils.empiar import entry_number, fetch_entry, list_files
+from streamem.utils.empiar import ImageSet, entry_number, fetch_entry, list_files
+
+# PLACEHOLDERS: hint shown beside the command prompt
+PLACEHOLDERS = '({file}, {outdir}, {name} placeholders available)'
 
 # max_workers: most concurrent files that fit in the usable budget, at least 0
 def _max_workers(budget_gb: float, margin: float, free_bytes: int, max_file_bytes: int) -> int:
@@ -42,53 +46,77 @@ def _render_slurm(config_path: Path, *, workers: int, partition: str, time: str,
     lines += ['', f'streamem run {config_path}', '']
     return '\n'.join(lines)
 
-# plan_run: interactively plan a run by creating config and (optionally) SLURM script
-def plan_run():
-    entry = ask_text('EMPIAR entry ID:')
-    number = entry_number(entry)
-    with busy('Querying EMPIAR API...'):
-        title, sets = fetch_entry(number)
-    show_entry(number, title)
-    chosen = choose(sets)
-    if not chosen:
+# _ask_entry: prompt for the entry ID (line erased once answered), returns its number
+def _ask_entry() -> str:
+    entry = ask_text('EMPIAR entry ID:', indent=0, erase=True)
+    try:
+        return entry_number(entry)
+    except ValueError:
+        fail(f'Invalid EMPIAR entry {entry!r}')
         raise SystemExit(1)
 
-    # sizes come from the FTP listing, only fetched for the selected sets
-    subs: list[SubDataset] = []
-    for s in chosen:
-        with busy(f'Listing {s.directory}...'):
-            files = list_files(number, s.directory)
-        sizes = [f.size for f in files]
-        cmd = ask_text(f'Command for {s.name} ({{file}} {{outdir}} {{name}} available):')
-        outdir = ask_path(f'Output directory for {s.name}:', f'results/{Path(s.directory).name}')
-        subs.append(SubDataset(name=s.name, directory=s.directory, cmd=cmd, outdir=outdir, n_files=len(files), mean_bytes=sum(sizes) // len(sizes), max_bytes=max(sizes)))
+# _plan_dataset: size table, command and output directory for one chosen image set
+def _plan_dataset(number: str, n: int, image_set: ImageSet) -> SubDataset:
+    section(f'Dataset {n}:')
+    with busy(f'Listing {image_set.directory}...'):
+        files = list_files(number, image_set.directory)
+    if not files:
+        fail(f'No files found in {image_set.directory}')
+        raise typer.Exit(1)
+    sizes = [f.size for f in files]
+    show_dataset(image_set.name, sizes)
+    cmd = ask_text('Command:', hint=PLACEHOLDERS)
+    outdir = ask_path('Output directory:', f'results/{Path(image_set.directory).name}')
+    return SubDataset(name=image_set.name, directory=image_set.directory, cmd=cmd, outdir=outdir, n_files=len(files), mean_bytes=sum(sizes) // len(sizes), max_bytes=max(sizes))
 
+# _plan_processing: scratch, storage limit, workers, config filename and optional SLURM script
+def _plan_processing(number: str, subs: list[SubDataset]) -> tuple[Config, Path, str | None]:
+    section('Processing configuration:')
     workdir = ask_path('Scratch directory for downloads:', 'scratch')
-    budget = ask_float('Disk budget for raw data (GB):', 200)
+    budget = ask_float('Storage limit for raw data (GB):', 200)
     margin = 0.8
-    biggest = max(s.max_bytes for s in subs)
-    safe = _max_workers(budget, margin, _free_bytes(workdir), biggest)
-    summary(subs, safe)
+    safe = _max_workers(budget, margin, _free_bytes(workdir), max(s.max_bytes for s in subs))
     if safe < 1:
-        fail('Budget too small for one file at the safety margin')
-        raise SystemExit(1)
-    workers = ask_int(f'Workers (max safe {safe}):', min(4, safe), maximum=safe)
-
+        fail('Storage limit too small for one file at the safety margin')
+        raise typer.Exit(1)
+    workers = ask_int(f'Number of workers (safe max: {safe}):', min(4, safe), maximum=safe)
+    config_path = ask_path('Filename for configuration:', 'streamem.toml')
     config = Config(entry=f'EMPIAR-{number}', workdir=workdir, budget_gb=budget, margin=margin, workers=workers, subdatasets=subs)
-    config_path = ask_path('Write config to:', 'streamem.toml')
-    write_config(config, config_path)
-    wrote(config_path)
+    sbatch = _plan_slurm(config_path, workers) if ask_confirm('Create SLURM script?') else None
+    return config, config_path, sbatch
 
-    if ask_confirm('Also write a SLURM script?'):
-        partition = ask_text('Partition (blank for default):', allow_blank=True)
-        time = ask_text('Time limit:', '24:00:00')
-        mem = ask_int('Memory (GB):', 64)
-        extra: list[str] = []
-        while request := ask_text('Additional SBATCH request (blank to continue):', allow_blank=True).strip().removeprefix('--'):
-            if '=' in request:
-                extra.append(request)
-            else:
-                fail('Use the form resource=request, e.g. gpus=1')
-        slurm_path = config_path.with_suffix('.sbatch')
-        slurm_path.write_text(_render_slurm(config_path, workers=workers, partition=partition, time=time, mem_gb=mem, extra=extra))
-        wrote(slurm_path)
+# _plan_slurm: SLURM questions (one level in) and the rendered script
+def _plan_slurm(config_path: Path, workers: int) -> str:
+    partition = ask_text('Partition (blank for default):', allow_blank=True, indent=2)
+    time = ask_text('Time:', '24:00:00', indent=2)
+    mem = ask_int('Memory (GB):', 64, indent=2)
+    extra: list[str] = []
+    while request := ask_text('Additional SBATCH request (blank to continue):', allow_blank=True, indent=2).strip().removeprefix('--'):
+        if '=' in request:
+            extra.append(request)
+        else:
+            fail('Use the form resource=request, e.g. gpus=1')
+    return _render_slurm(config_path, workers=workers, partition=partition, time=time, mem_gb=mem, extra=extra)
+
+# plan_run: interactively plan a run, writing a config and (optionally) SLURM script once confirmed
+def plan_run() -> None:
+    with framed(ruled=True):
+        number = _ask_entry()
+        with busy('Querying EMPIAR API...'):
+            title, sets = fetch_entry(number)
+        show_entry(number, title)
+        chosen = choose(sets)
+        if chosen is None:
+            say('Cancelled')
+            raise typer.Exit(1)
+        subs = [_plan_dataset(number, n, image_set) for n, image_set in enumerate(chosen, 1)]
+        config, config_path, sbatch = _plan_processing(number, subs)
+        sbatch_path = config_path.with_suffix('.sbatch') if sbatch is not None else None
+        show_preview(config_path.name, config.model_dump(mode='json', exclude_none=True), sbatch)
+        if not ask_confirm('Continue?', True):
+            say('Nothing written')
+            raise typer.Exit(0)
+        write_config(config, config_path)
+        if sbatch_path is not None:
+            sbatch_path.write_text(sbatch)
+        saved(config_path, sbatch_path)
