@@ -18,6 +18,20 @@ app = typer.Typer(
     no_args_is_help=True
 )
 
+# ConfigPath: config file argument, must exist and be a readable file
+ConfigPath = Annotated[
+    Path,
+    typer.Argument(
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        resolve_path=True,
+        metavar='CONFIG',
+        help='Path to configuration TOML file.',
+    ),
+]
+
 # plan: interactive dry run that writes a config and optional SLURM script
 @app.command()
 def plan() -> None:
@@ -29,10 +43,7 @@ def plan() -> None:
 # run: process all pending files using a config TOML
 @app.command('run')
 def run(
-    config_path: Annotated[
-        Path,
-        typer.Argument(help='Path to configuration TOML file.'),
-    ],
+    config_path: ConfigPath,
     retry_failed: Annotated[
         bool,
         typer.Option('--retry-failed', help='Requeue files that previously failed.'),
@@ -46,13 +57,10 @@ def run(
 # status: show progress of a run
 @app.command('status')
 def status(
-    config_path: Annotated[
-        Path,
-        typer.Argument(help='Path to configuration TOML file.')
-    ],
+    config_path: ConfigPath,
     limit: Annotated[
         int,
-        typer.Option('--limit', help='Maximum number of failed files to list.')
+        typer.Option('--limit', min=1, metavar='N', help='Maximum number of failed files to list.'),
     ] = 20,
 ) -> None:
     '''
