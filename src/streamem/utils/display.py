@@ -67,6 +67,42 @@ def _ask_number(
 def busy(message: str) -> AbstractContextManager:
     return console.status(message)
 
+# blank: empty line
+def blank() -> None:
+    console.print()
+
+# rule: full width dashed line
+def rule() -> None:
+    console.rule(style='dim', characters='-')
+
+# section: blank line then a title, content under it is indented with say or an indented prompt
+def section(title: str) -> None:
+    blank()
+    console.print(title)
+
+# say: print text (markup allowed) or any rich renderable at an indentation level
+def say(content: RenderableType, indent: int = 1) -> None:
+    console.print(Padding(content, (0, 0, 0, INDENT * indent), expand=False))
+
+# erase_last_line: remove the previous terminal line
+def erase_last_line() -> None:
+    if console.is_terminal:
+        console.file.write('\x1b[1A\x1b[2K\r')
+        console.file.flush()
+
+# framed: blank line (and rule when ruled) before and after the wrapped output (including early exit)
+@contextmanager
+def framed(*, ruled: bool = False) -> Iterator[None]:
+    blank()
+    if ruled:
+        rule()
+    try:
+        yield
+    finally:
+        if ruled:
+            rule()
+        blank()
+
 # show_entry: print a heading for the queried EMPIAR entry
 def show_entry(number: str, title: str) -> None:
     console.print(f'[bold]EMPIAR-{number}[/bold]: {title}')
