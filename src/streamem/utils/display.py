@@ -52,12 +52,12 @@ console = Console()
 def _label(message: str, indent: int) -> str:
     return ' ' * max(0, INDENT * indent - 1) + message
 
-# _ask_number: text prompt validated as kind within bounds, returning the raw answer
-def _ask_number(
-    message: str, default: float, kind: Callable[[str], float], minimum: float, maximum: float | None, indent: int
-) -> str:
+# _ask_number: text prompt validated as kind within bounds, returns the raw answer
+def _ask_number(message: str, default: float | None, kind: Callable[[str], float], minimum: float, maximum: float | None, indent: int, *, allow_blank: bool = False) -> str:
     # check: questionary validator, True or an error message
     def check(value: str) -> bool | str:
+        if allow_blank and not value.strip():
+            return True
         try:
             number = kind(value)
         except ValueError:
@@ -148,6 +148,15 @@ def ask_int(message: str, default: int, *, minimum: int = 1, maximum: int | None
 # ask_float: float prompt re-asked until within minimum and maximum
 def ask_float(message: str, default: float, *, minimum: float = 0.1, maximum: float | None = None, indent: int = 1) -> float:
     return float(_ask_number(message, default, float, minimum, maximum, indent))
+
+# ask_optional_int: integer prompt where a blank answer means None
+def ask_optional_int(message: str, *, minimum: int = 1, maximum: int | None = None, indent: int = 1) -> int | None:
+    answer = _ask_number(message, None, int, minimum, maximum, indent, allow_blank=True)
+    return int(answer) if answer.strip() else None
+
+# ask_select: pick one option from a list
+def ask_select(message: str, options: list[str], *, indent: int = 1) -> str:
+    return questionary.select(_label(message, indent), choices=options, **_PROMPT).unsafe_ask()
 
 # ask_confirm: yes/no prompt
 def ask_confirm(message: str, default: bool = False, *, indent: int = 1) -> bool:
