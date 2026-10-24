@@ -3,16 +3,17 @@ streamem: plan command logic and helpers for calculating disk budget & rendering
 '''
 
 # Import external dependencies
-import shutil
+import random, shutil
 from pathlib import Path
 
 # Import internal streamem objects
 from streamem.utils.config import Config, SubDataset, write_config
 from streamem.utils.display import (
-    GB, ask_confirm, ask_float, ask_int, ask_path, ask_text, busy, choose, fail, framed, saved, say, section,
-    show_dataset, show_entry, show_preview,
+    GB, ask_confirm, ask_float, ask_int, ask_optional_int, ask_path, ask_select, ask_text, busy, choose, fail,
+    framed, saved, say, section, show_dataset, show_entry, show_preview,
 )
 from streamem.utils.empiar import ImageSet, entry_number, fetch_entry, list_files
+from streamem.utils.subset import select_files
 
 # PLACEHOLDERS: hint shown beside the command prompt
 PLACEHOLDERS = '({file}, {outdir}, {name} placeholders available)'
@@ -55,7 +56,7 @@ def _ask_entry() -> str:
         fail(f'Invalid EMPIAR entry {entry!r}')
         raise SystemExit(1)
 
-# _plan_dataset: size table, command and output directory for one chosen image set
+# _plan_dataset: size table, subset, command and output directory for one chosen image set
 def _plan_dataset(number: str, n: int, image_set: ImageSet) -> SubDataset:
     section(f'Dataset {n}:')
     with busy(f'Listing {image_set.directory}...'):
@@ -63,11 +64,27 @@ def _plan_dataset(number: str, n: int, image_set: ImageSet) -> SubDataset:
     if not files:
         fail(f'No files found in {image_set.directory}')
         raise typer.Exit(1)
-    sizes = [f.size for f in files]
-    show_dataset(image_set.name, sizes)
+    show_dataset(image_set.name, [f.size for f in files])
+    subset, order, seed = _ask_subset(len(files))
+    picked = select_files(files, subset, order, seed)
+    if subset is not None:
+        say(f'Using {len(picked)} of {len(files)} files ({order})')
+    sizes = [f.size for f in picked]
     cmd = ask_text('Command:', hint=PLACEHOLDERS)
     outdir = ask_path('Output directory:', f'results/{Path(image_set.directory).name}')
-    return SubDataset(name=image_set.name, directory=image_set.directory, cmd=cmd, outdir=outdir, n_files=len(files), mean_bytes=sum(sizes) // len(sizes), max_bytes=max(sizes))
+    return SubDataset(
+        name=image_set.name, directory=image_set.directory, cmd=cmd, outdir=outdir,
+        n_files=len(picked), mean_bytes=sum(sizes) // len(sizes), max_bytes=max(sizes),
+        subset=subset, order=order, seed=seed,
+    )
+
+# _ask_subset: how many files to use and which, blank for all, a random pick gets a fresh stored seed
+def _ask_subset(total: int) -> tuple[int | None, str, int]:
+    subset = ask_optional_int(f'Number of files to process (blank for all {total}):', maximum=total)
+    if subset is None:
+        return None, 'alphabetical', 0
+    order = ask_select('Which files:', ['alphabetical', 'random'])
+    return subset, order, random.randrange(2**32) if order == 'random' else 0
 
 # _plan_processing: scratch, storage limit, workers, config filename and optional SLURM script
 def _plan_processing(number: str, subs: list[SubDataset]) -> tuple[Config, Path, str | None]:
@@ -78,7 +95,7 @@ def _plan_processing(number: str, subs: list[SubDataset]) -> tuple[Config, Path,
     safe = _max_workers(budget, margin, _free_bytes(workdir), max(s.max_bytes for s in subs))
     if safe < 1:
         fail('Storage limit too small for one file at the safety margin')
-        raise typer.Exit(1)
+        raise SystemExit(1)
     workers = ask_int(f'Number of workers (safe max: {safe}):', min(4, safe), maximum=safe)
     config_path = ask_path('Filename for configuration:', 'streamem.toml')
     config = Config(entry=f'EMPIAR-{number}', workdir=workdir, budget_gb=budget, margin=margin, workers=workers, subdatasets=subs)
@@ -108,14 +125,14 @@ def plan_run() -> None:
         chosen = choose(sets)
         if chosen is None:
             say('Cancelled')
-            raise typer.Exit(1)
+            raise SystemExit(1)
         subs = [_plan_dataset(number, n, image_set) for n, image_set in enumerate(chosen, 1)]
         config, config_path, sbatch = _plan_processing(number, subs)
         sbatch_path = config_path.with_suffix('.sbatch') if sbatch is not None else None
         show_preview(config_path.name, config.model_dump(mode='json', exclude_none=True), sbatch)
         if not ask_confirm('Continue?', True):
             say('Nothing written')
-            raise typer.Exit(0)
+            raise SystemExit(0)
         write_config(config, config_path)
         if sbatch_path is not None:
             sbatch_path.write_text(sbatch)
