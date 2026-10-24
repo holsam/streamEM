@@ -7,18 +7,21 @@ import questionary, questionary.prompts.common
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
+from rich.columns import Columns
 from rich.console import Console, RenderableType
+from rich.markup import escape
 from rich.padding import Padding
+from rich.syntax import Syntax
 from rich.table import Table
+from rich.tree import Tree
 from typing import get_args
 
 # Import internal streamem objects
-from streamem.utils.config import SubDataset
 from streamem.utils.empiar import ImageSet
 from streamem.utils.manifest import Status
 
 # GB: bytes per gigabyte (used for budgets and display)
-GB = 1024**3
+GB = 1000**3
 
 # INDENT: number of spaces to use per indentation level
 INDENT = 2
@@ -35,6 +38,9 @@ STYLE = questionary.Style([
 
 # _PROMPT: keyword arguments for all questionary prompts
 _PROMPT = {'qmark': '', 'style': STYLE}
+
+# CANCEL: row appended to the dataset list, ticking it abandons the plan
+CANCEL = 'Cancel'
 
 # questionary.prompts.common.INDICATOR_SELECTED: use a tick to indicate selected checkbox rows
 questionary.prompts.common.INDICATOR_SELECTED = '✔'
@@ -62,6 +68,18 @@ def _ask_number(
             return f'must be at most {maximum}'
         return True
     return questionary.text(_label(message, indent), default=str(default), validate=check, **_PROMPT).unsafe_ask()
+
+# _add_branches: recursively add dict keys and list items to a rich tree
+def _add_branches(tree: Tree, data: object) -> None:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                _add_branches(tree.add(f'[bold]{escape(str(key))}[/bold]'), value)
+            else:
+                tree.add(escape(f'{key}: {value}'))
+    elif isinstance(data, list):
+        for i, item in enumerate(data, 1):
+            _add_branches(tree.add(f'#{i}'), item)
 
 # busy: show a spinner during execution
 def busy(message: str) -> AbstractContextManager:
@@ -111,10 +129,6 @@ def show_entry(number: str, title: str) -> None:
 def fail(message: str) -> None:
     console.print(f'[red]{message}[/red]')
 
-# wrote: confirmation that a file was written
-def wrote(path: Path) -> None:
-    console.print(f'wrote {path}')
-
 # ask_text: free text prompt, blank answers rejected unless allow_blank
 def ask_text(message: str, default: str = '', *, allow_blank: bool = False, hint: str = '', erase: bool = False, indent: int = 1) -> str:
     validate = None if allow_blank else lambda value: bool(value.strip()) or 'cannot be blank'
@@ -139,24 +153,46 @@ def ask_float(message: str, default: float, *, minimum: float = 0.1, maximum: fl
 def ask_confirm(message: str, default: bool = False, *, indent: int = 1) -> bool:
     return questionary.confirm(_label(message, indent), default=default, **_PROMPT).unsafe_ask()
 
-# choose: multi-select image sets from a table
-def choose(sets: list[ImageSet]) -> list[ImageSet]:
+# choose: tabulate image sets and multi-select them, None when cancelled
+def choose(sets: list[ImageSet]) -> list[ImageSet] | None:
+    section('Available datasets:')
     table = Table('#', 'name', 'category', 'format', 'count')
     for i, s in enumerate(sets):
         table.add_row(str(i), s.name, s.category, s.data_format, str(s.count))
-    console.print(table)
-    picked = questionary.checkbox(
-        'sub-datasets to process:', choices=[questionary.Choice(f'{i}: {s.directory}', value=s) for i, s in enumerate(sets)]
-    ).unsafe_ask()
-    return picked or []
+    say(table)
+    titles = {id(s): f'{i}: {s.directory}' for i, s in enumerate(sets)}
+    choices = [questionary.Choice(titles[id(s)], value=s) for s in sets]
+    choices.append(questionary.Choice(CANCEL, value=None))
+    picked = questionary.checkbox(_label('Datasets to process:', 1), choices=choices, validate=lambda selected: bool(selected) or 'Select at least one dataset, or Cancel', **_PROMPT).unsafe_ask()
+    if None in picked:
+        return None
+    # swap questionary's own 'done (n selections)' line for the chosen directories
+    erase_last_line()
+    say(escape('Datasets to process: [' + ', '.join(titles[id(s)] for s in picked) + ']'))
+    return picked
 
-# summary: per sub-dataset sizes and the planned limits
-def summary(subs: list[SubDataset], safe: int) -> None:
-    table = Table('sub-dataset', 'files', 'mean GB', 'max GB', 'total TB')
-    for s in subs:
-        table.add_row(s.name, str(s.n_files), f'{s.mean_bytes / GB:.2f}', f'{s.max_bytes / GB:.2f}', f'{s.n_files * s.mean_bytes / GB / 1000:.2f}')
-    console.print(table)
-    console.print(f'max safe concurrent files: [bold]{safe}[/bold]')
+# show_dataset: one dataset's file count and sizes
+def show_dataset(name: str, sizes: list[int]) -> None:
+    table = Table('dataset', 'files', 'mean GB', 'max GB', 'total TB')
+    table.add_row(
+        name, str(len(sizes)), f'{sum(sizes) / len(sizes) / GB:.2f}', f'{max(sizes) / GB:.2f}', f'{sum(sizes) / GB / 1000:.2f}'
+    )
+    say(table)
+
+# show_preview: the config as a tree, next to the SLURM script when there is one
+def show_preview(name: str, config: dict, sbatch: str | None) -> None:
+    section('Preview:')
+    tree = Tree(f'[bold]{escape(name)}[/bold]')
+    _add_branches(tree, config)
+    shown: list[RenderableType] = [tree]
+    if sbatch is not None:
+        shown.append(Syntax(sbatch, 'bash', theme='ansi_dark', background_color='default'))
+    say(Columns(shown, padding=(0, 4)))
+
+# saved: confirmation of the files written
+def saved(config_path: Path, sbatch_path: Path | None = None) -> None:
+    extra = f' (& {sbatch_path.name})' if sbatch_path is not None else ''
+    say(escape(f'Saved {config_path.name}{extra} to {config_path.resolve().parent}.'))
 
 # report_counts: one-line progress of files per status
 def report_counts(counts: dict[str, int]) -> None:
