@@ -67,7 +67,7 @@ def _ask_number(message: str, default: float | None, kind: Callable[[str], float
         if maximum is not None and number > maximum:
             return f'must be at most {maximum}'
         return True
-    return questionary.text(_label(message, indent), default=str(default), validate=check, **_PROMPT).unsafe_ask()
+    return questionary.text(_label(message, indent), default='' if default is None else str(default), validate=check, **_PROMPT).unsafe_ask()
 
 # _add_branches: recursively add dict keys and list items to a rich tree
 def _add_branches(tree: Tree, data: object) -> None:
@@ -171,9 +171,10 @@ def choose(sets: list[ImageSet]) -> list[ImageSet] | None:
     say(table)
     titles = {id(s): f'{i}: {s.directory}' for i, s in enumerate(sets)}
     choices = [questionary.Choice(titles[id(s)], value=s) for s in sets]
-    choices.append(questionary.Choice(CANCEL, value=None))
+    # questionary turns a None value into the title, so cancel is keyed on its title
+    choices.append(questionary.Choice(CANCEL, value=CANCEL))
     picked = questionary.checkbox(_label('Datasets to process:', 1), choices=choices, validate=lambda selected: bool(selected) or 'Select at least one dataset, or Cancel', **_PROMPT).unsafe_ask()
-    if None in picked:
+    if CANCEL in picked:
         return None
     # swap questionary's own 'done (n selections)' line for the chosen directories
     erase_last_line()
