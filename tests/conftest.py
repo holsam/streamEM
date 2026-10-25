@@ -3,7 +3,7 @@ streamem: shared test fixtures
 '''
 
 # Import external dependencies
-import io, json, pytest
+import ftplib, io, json, pytest
 from collections.abc import Callable
 from pathlib import Path
 from rich.console import Console
@@ -59,11 +59,17 @@ class Prompts:
             return _Question(answer(kwargs) if callable(answer) else answer)
         return prompt
 
-# FakeFTP: mock ftplib.FTP with scripted behaviour per connection
+# DATA: contents of the fake remote file served by FakeFTP downloads
+DATA = b'0123456789'
+
+# FakeFTP: mock ftplib.FTP serving LIST lines and a downloadable file, with scripted behaviour per connection
 class FakeFTP:
-    def __init__(self, lines: list[str]) -> None:
-        self.lines = lines
+    # modes are consumed one per retrbinary call: ok, drop (half then reset), short (all but one byte), perm
+    def __init__(self, lines: list[str] | None = None, modes: list[str] | None = None) -> None:
+        self.lines = lines or []
+        self.modes = modes or []
         self.cwd_path = ''
+        self.rests: list[int | None] = []
     def __call__(self, *args: object, **kwargs: object) -> 'FakeFTP':
         return self
     def __enter__(self) -> 'FakeFTP':
@@ -77,6 +83,18 @@ class FakeFTP:
     def retrlines(self, cmd: str, callback: Callable[[str], None]) -> None:
         for line in self.lines:
             callback(line)
+    def size(self, name: str) -> int:
+        return len(DATA)
+    def retrbinary(self, cmd: str, callback: Callable[[bytes], None], blocksize: int = 8192, rest: int | None = None) -> None:
+        self.rests.append(rest)
+        mode = self.modes.pop(0)
+        if mode == 'perm':
+            raise ftplib.error_perm('550 no such file')
+        chunk = DATA[rest or 0 :]
+        if mode == 'drop':
+            callback(chunk[: len(chunk) // 2])
+            raise ConnectionResetError
+        callback(chunk[:-1] if mode == 'short' else chunk)
 
 # ask: replace every questionary prompt with scripted answers
 @pytest.fixture
@@ -107,6 +125,15 @@ def fake_ftp(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[str]], FakeFTP]:
 def fake_urlopen(monkeypatch: pytest.MonkeyPatch) -> Callable[[dict], None]:
     def install(payload: dict) -> None:
         monkeypatch.setattr(empiar.urllib.request, 'urlopen', lambda url, timeout=30: io.BytesIO(json.dumps(payload).encode()))
+    return install
+
+# download_ftp: installer to swap ftplib.FTP for a FakeFTP scripted with the given download modes
+@pytest.fixture
+def download_ftp(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[str]], FakeFTP]:
+    def install(modes: list[str]) -> FakeFTP:
+        fake = FakeFTP(modes=modes)
+        monkeypatch.setattr(empiar.ftplib, 'FTP', fake)
+        return fake
     return install
 
 # remote: fake EMPIAR with ENTRY_PAYLOAD over REST and LIST_LINES over FTP
