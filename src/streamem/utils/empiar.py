@@ -107,6 +107,12 @@ def fetch_entry(entry: str) -> tuple[str, list[ImageSet]]:
 def list_files(entry: str, directory: str) -> list[RemoteFile]:
     return _retry(lambda: _list(entry, directory), threading.Event(), retries=RETRIES, backoff=BACKOFF)
 
+# match_pairs: files of two sets that share a stem, plus the number of files left without a partner
+def match_pairs(first: list[RemoteFile], second: list[RemoteFile]) -> tuple[list[tuple[RemoteFile, RemoteFile]], int]:
+    by_stem = {Path(f.name).stem: f for f in second}
+    pairs = [(f, by_stem[Path(f.name).stem]) for f in first if Path(f.name).stem in by_stem]
+    return pairs, len(first) + len(second) - 2 * len(pairs)
+
 # download: fetch one file over FTP to dest, with resume/retry support, aborting once stop is set
 def download(
     entry: str,
