@@ -7,7 +7,7 @@ import random, shutil
 from pathlib import Path
 
 # Import internal streamem objects
-from streamem.utils.config import Config, SubDataset, write_config
+from streamem.utils.config import Config, SubDataset, footprint, write_config
 from streamem.utils.display import (
     GB, ask_confirm, ask_float, ask_int, ask_optional_int, ask_path, ask_select, ask_text, busy, choose, fail,
     framed, saved, say, section, show_dataset, show_entry, show_preview,
@@ -17,6 +17,9 @@ from streamem.utils.subset import select_files
 
 # PLACEHOLDERS: hint shown beside the command prompt
 PLACEHOLDERS = '({file}, {outdir}, {name} placeholders available)'
+
+# PAIR_PLACEHOLDERS: hint shown beside the command prompt of a paired dataset
+PAIR_PLACEHOLDERS = '({file}, {pair}, {outdir}, {name} placeholders available)'
 
 # max_workers: most concurrent files that fit in the usable budget, at least 0
 def _max_workers(budget_gb: float, margin: float, free_bytes: int, max_file_bytes: int) -> int:
@@ -57,7 +60,7 @@ def _ask_entry() -> str:
         raise SystemExit(1)
 
 # _plan_dataset: size table, subset, command and output directory for one chosen image set
-def _plan_dataset(number: str, n: int, image_set: ImageSet) -> SubDataset:
+def _plan_dataset(number: str, n: int, image_set: ImageSet, *, paired: bool = False, partner: bool = False) -> SubDataset:
     section(f'Dataset {n}:')
     with busy(f'Listing {image_set.directory}...'):
         files = list_files(number, image_set.directory)
@@ -65,12 +68,19 @@ def _plan_dataset(number: str, n: int, image_set: ImageSet) -> SubDataset:
         fail(f'No files found in {image_set.directory}')
         raise typer.Exit(1)
     show_dataset(image_set.name, [f.size for f in files])
+    if partner:
+        # a partner is fetched for the primary's command, so it needs no subset, command or output directory
+        sizes = [f.size for f in files]
+        return SubDataset(
+            name=image_set.name, directory=image_set.directory, cmd='', outdir=Path('.'),
+            n_files=len(files), mean_bytes=sum(sizes) // len(sizes), max_bytes=max(sizes),
+        )
     subset, order, seed = _ask_subset(len(files))
     picked = select_files(files, subset, order, seed)
     if subset is not None:
         say(f'Using {len(picked)} of {len(files)} files ({order})')
     sizes = [f.size for f in picked]
-    cmd = ask_text('Command:', hint=PLACEHOLDERS)
+    cmd = ask_text('Command:', hint=PAIR_PLACEHOLDERS if paired else PLACEHOLDERS)
     outdir = ask_path('Output directory:', f'results/{Path(image_set.directory).name}')
     return SubDataset(
         name=image_set.name, directory=image_set.directory, cmd=cmd, outdir=outdir,
@@ -92,7 +102,7 @@ def _plan_processing(number: str, subs: list[SubDataset]) -> tuple[Config, Path,
     workdir = ask_path('Scratch directory for downloads:', 'scratch')
     budget = ask_float('Storage limit for raw data (GB):', 200)
     margin = 0.8
-    safe = _max_workers(budget, margin, _free_bytes(workdir), max(s.max_bytes for s in subs))
+    safe = _max_workers(budget, margin, _free_bytes(workdir), footprint(subs))
     if safe < 1:
         fail('Storage limit too small for one file at the safety margin')
         raise SystemExit(1)
@@ -126,7 +136,13 @@ def plan_run() -> None:
         if chosen is None:
             say('Cancelled')
             raise SystemExit(1)
-        subs = [_plan_dataset(number, n, image_set) for n, image_set in enumerate(chosen, 1)]
+        paired = len(chosen) == 2 and ask_confirm('Pair Dataset 2 with Dataset 1 by file stem?')
+        subs = [
+            _plan_dataset(number, n, image_set, paired=paired, partner=paired and n == 2)
+            for n, image_set in enumerate(chosen, 1)
+        ]
+        if paired:
+            subs[0].pair_with = subs[1].name
         config, config_path, sbatch = _plan_processing(number, subs)
         sbatch_path = config_path.with_suffix('.sbatch') if sbatch is not None else None
         show_preview(config_path.name, config.model_dump(mode='json', exclude_none=True), sbatch)
