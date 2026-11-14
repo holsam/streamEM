@@ -23,7 +23,7 @@ class Manifest:
         with self._lock, self._db:
             self._db.execute(
                 'CREATE TABLE IF NOT EXISTS files '
-                '(sub TEXT, name TEXT, size INTEGER, status TEXT NOT NULL, error TEXT, PRIMARY KEY (sub, name))'
+                '(sub TEXT, name TEXT, size INTEGER, status TEXT NOT NULL, error TEXT, pair TEXT, PRIMARY KEY (sub, name))'
             )
             # a row still running means the last run died mid-file, but a reader must not touch a live run
             if recover:
@@ -36,6 +36,20 @@ class Manifest:
                 'INSERT OR IGNORE INTO files (sub, name, size, status) VALUES (?, ?, ?, ?)',
                 [(sub, f.name, f.size, 'pending') for f in files],
             )
+
+    # add_pairs: register file pairs under the primary's name, size is the pair total, existing rows keep their status
+    def add_pairs(self, sub: str, pairs: list[tuple[RemoteFile, RemoteFile]]) -> None:
+        with self._lock, self._db:
+            self._db.executemany(
+                'INSERT OR IGNORE INTO files (sub, name, size, status, pair) VALUES (?, ?, ?, ?, ?)',
+                [(sub, a.name, a.size + b.size, 'pending', b.name) for a, b in pairs],
+            )
+
+    # pair_of: partner file name of a paired row, None for an unpaired one
+    def pair_of(self, sub: str, name: str) -> str | None:
+        with self._lock:
+            row = self._db.execute('SELECT pair FROM files WHERE sub = ? AND name = ?', (sub, name)).fetchone()
+        return row[0] if row else None
 
     # claim: atomically take the next pending file and mark it running
     def claim(self) -> tuple[str, str] | None:

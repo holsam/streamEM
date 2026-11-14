@@ -7,15 +7,16 @@ import typer
 from pathlib import Path
 
 # Import internal streamem objects
-from streamem.utils.display import fail, show_failures, show_status
+from streamem.utils.display import fail, framed, show_failures, show_status
 from streamem.utils.manifest import Manifest
 
 # check_status: show progress of a config's manifest
 def check_status(config_path: Path, limit: int = 20) -> None:
-    db = config_path.with_suffix('.db')
-    if not db.exists():
-        fail(f'No manifest at {db}, run `streamem run` first')
-        raise typer.Exit(1)
-    manifest = Manifest(db, recover=False)
-    show_status(manifest.summary())
-    show_failures(manifest.failures(), limit)
+    with framed():
+        db = config_path.with_suffix('.db')
+        if not db.exists():
+            fail(f'No manifest at {db}, run `streamem run` first')
+            raise typer.Exit(1)
+        manifest = Manifest(db, recover=False)
+        show_status(manifest.summary())
+        show_failures(manifest.failures(), limit)
