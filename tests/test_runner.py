@@ -3,8 +3,7 @@ streamem: tests for the worker pool
 '''
 
 # Import external dependencies
-import pytest
-import threading
+import pytest, threading
 from pathlib import Path
 
 # Import internal streamem objects
@@ -117,3 +116,10 @@ class TestRunner:
         text = (tmp_path / 'out' / 'a' / LOG).read_text()
         assert text.index('first') < text.index('second')
         assert text.count(' ---\n') == 2
+
+    # test_failure_is_logged: a failed file is logged with its stage and error
+    def test_failure_is_logged(self, make_config, manifest: Manifest, fake_fetch, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level('INFO', logger='streamem')
+        run(make_config('exit 3'), manifest, fake_fetch)
+        assert 'failed s/a.mrc at exec' in caplog.text
+        assert 'command exit 3 for s/a.mrc' in caplog.text

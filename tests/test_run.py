@@ -94,3 +94,11 @@ class TestExecRun:
         result = runner.invoke(app, ['run', str(path), '--retry-failed', '--only', 'fetch'])
         assert self.counts(path)['failed'] == 3
         assert result.exit_code == 1
+
+    # test_run_log_written: the run log sits beside the config and records each file's outcome
+    def test_run_log_written(self, tmp_path: Path, make_config) -> None:
+        path = self.write(tmp_path, make_config, 'true')
+        runner.invoke(app, ['run', str(path)])
+        text = path.with_suffix('.log').read_text()
+        assert text.count('done s/') == 3
+        assert "'done': 3" in text

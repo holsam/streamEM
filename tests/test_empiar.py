@@ -151,3 +151,17 @@ class TestDownload:
         with pytest.raises(ConnectionResetError):
             empiar._retry(fail, stop, retries=4, backoff=50)
         assert waits == [50, 100, empiar.MAX_BACKOFF, empiar.MAX_BACKOFF]
+
+    # test_retry_is_logged: each retry names the file and the error
+    def test_retry_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level('WARNING', logger='streamem')
+        calls = iter([ConnectionResetError('boom'), None])
+
+        # flaky: fail once, then work
+        def flaky() -> None:
+            if (item := next(calls)) is not None:
+                raise item
+
+        empiar._retry(flaky, threading.Event(), retries=1, backoff=0, what='data/f.mrc')
+        assert 'data/f.mrc: retry 1 of 1' in caplog.text
+        assert 'boom' in caplog.text
