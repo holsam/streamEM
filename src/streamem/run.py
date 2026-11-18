@@ -15,7 +15,7 @@ from streamem.utils.manifest import Manifest
 from streamem.utils.subset import select_files
 
 # exec_run: process every pending file of a config, resuming from its manifest
-def exec_run(config_path: Path, retry_failed: bool = False) -> None:
+def exec_run(config_path: Path, retry_failed: bool = False, only: Stage | None = None) -> None:
     with framed():
         config = load_config(config_path)
         number = entry_number(config.entry)
@@ -35,7 +35,7 @@ def exec_run(config_path: Path, retry_failed: bool = False) -> None:
         for note in notes:
             say(note)
         if retry_failed:
-            manifest.retry_failed()
+            manifest.retry_failed(only)
         runner.run(config, manifest, partial(download, number), report=report_counts)
         counts = manifest.counts()
         report_counts(counts)

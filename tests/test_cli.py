@@ -40,3 +40,17 @@ class TestLimitOption:
         config.write_text('')
         result = runner.invoke(app, ['status', str(config), '--limit', '0'])
         assert result.exit_code == 2
+
+# TestOnlyOption: --only is only valid with --retry-failed
+class TestOnlyOption:
+    # test_needs_retry_failed: --only alone exits 2
+    def test_needs_retry_failed(self, tmp_path: Path) -> None:
+        config = tmp_path / 'c.toml'
+        config.write_text('')
+        assert runner.invoke(app, ['run', str(config), '--only', 'fetch']).exit_code == 2
+
+    # test_rejects_unknown_stage: only fetch and exec are accepted
+    def test_rejects_unknown_stage(self, tmp_path: Path) -> None:
+        config = tmp_path / 'c.toml'
+        config.write_text('')
+        assert runner.invoke(app, ['run', str(config), '--retry-failed', '--only', 'nope']).exit_code == 2
