@@ -152,6 +152,12 @@ class TestHelpers:
                 raise RuntimeError
         assert capture.getvalue() == '\n\n'
 
+    # test_duration: seconds render as hours, minutes or seconds
+    def test_duration(self) -> None:
+        assert display._duration(7) == '7s'
+        assert display._duration(250) == '4m10s'
+        assert display._duration(5000) == '1h23m'
+
 # TestChoose: dataset multi-select
 class TestChoose:
     # sets: two image sets for the checkbox
@@ -221,3 +227,10 @@ class TestShow:
         assert 'Saved c.toml (& c.sbatch) to' in text
         display.saved(tmp_path / 'c.toml')
         assert '(&' not in capture.getvalue().splitlines()[-1]
+
+    # test_show_status_eta: files left times mean seconds divided by workers
+    def test_show_status_eta(self) -> None:
+        summary = {'s': {'pending': (4, 4), 'running': (0, 0), 'done': (1, 1), 'failed': (0, 0)}}
+        with display.console.capture() as captured:
+            display.show_status(summary, {'s': (90.0, 1)}, workers=2)
+        assert '3m00s' in captured.get()

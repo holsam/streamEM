@@ -3,18 +3,22 @@ streamem: worker pool that downloads, processes and deletes one file at a time
 '''
 
 # Import external dependencies
-import os, shlex, signal, subprocess, threading
+import logging, os, shlex, signal, subprocess, threading, time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 # Import internal streamem objects
 from streamem.utils.config import Config, SubDataset, footprint
-from streamem.utils.manifest import Manifest, Status
+from streamem.utils.manifest import Manifest, Stage, Status
 from streamem.plan import _free_bytes, _max_workers
 
 # LOG: per-file command output, written inside that file's outdir
 LOG = 'streamem.log'
+
+# log: module logger
+log = logging.getLogger(__name__)
 
 # Fetch: download (directory, name) to a local path, raising if stop is set mid-transfer
 Fetch = Callable[[str, str, Path, threading.Event], None]
@@ -40,6 +44,7 @@ def run(
                 future.result()
         except KeyboardInterrupt:
             # workers see the event, abort their file and requeue it, the pool exit waits for them
+            log.warning('interrupted, waiting for workers to requeue their files')
             stop.set()
 
 # _work: one worker, claim and process files until none are left
@@ -66,12 +71,15 @@ def _process(
     fetch: Fetch,
     stop: threading.Event,
 ) -> None:
+    log.info('start %s/%s', sub.name, name)
+    began = time.monotonic()
     path = config.workdir / Path(sub.directory).name / name
     partner = config.partner(sub)
     pair_path = config.workdir / Path(partner.directory).name / pair if partner is not None and pair else None
     stem = Path(name).stem
     outdir = sub.outdir / stem
     status: Status
+    stage: Stage = 'fetch'
     error: str | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,7 +88,11 @@ def _process(
         if partner is not None and pair_path is not None:
             pair_path.parent.mkdir(parents=True, exist_ok=True)
             fetch(partner.directory, pair, pair_path, stop)
+        log.info('fetched %s/%s in %.1fs', sub.name, name, time.monotonic() - began)
+        stage = 'exec'
+        ran = time.monotonic()
         code = _exec(_expand(sub.cmd, file=path, outdir=outdir, name=stem, pair=pair_path), path, outdir, stem, pair_path, stop)
+        log.info('command exit %d for %s/%s in %.1fs', code, sub.name, name, time.monotonic() - ran)
         status = 'done' if code == 0 else 'failed'
         error = None if code == 0 else f'exit code {code}, see {outdir / LOG}'
     except Exception as exc:
@@ -93,7 +105,9 @@ def _process(
     if stop.is_set() and status == 'failed':
         # killed by the stop request, not a real failure
         status, error = 'pending', None
-    manifest.finish(sub.name, name, status, error)
+    detail = f' at {stage}: {error}' if status == 'failed' else ''
+    log.log(logging.WARNING if status == 'failed' else logging.INFO, '%s %s/%s%s', status, sub.name, name, detail)
+    manifest.finish(sub.name, name, status, error, stage if status == 'failed' else None)
 
 # _expand: substitute placeholders by plain replace so shell braces survive
 def _expand(cmd: str, *, file: Path, outdir: Path, name: str, pair: Path | None = None) -> str:
@@ -109,7 +123,10 @@ def _exec(cmd: str, file: Path, outdir: Path, name: str, pair: Path | None, stop
     env = {**os.environ, 'STREAMEM_FILE': str(file), 'STREAMEM_OUTDIR': str(outdir), 'STREAMEM_NAME': name}
     if pair is not None:
         env['STREAMEM_PAIR'] = str(pair)
-    with (outdir / LOG).open('wb') as log:
+    with (outdir / LOG).open('ab') as log:
+        # one dated header per attempt, a retry appends rather than overwriting the last failure
+        log.write(f'--- {datetime.now().isoformat(timespec='seconds')} ---\n'.encode())
+        log.flush()
         proc = subprocess.Popen(cmd, shell=True, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         while True:
             try:

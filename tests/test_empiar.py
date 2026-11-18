@@ -93,12 +93,23 @@ class TestDownload:
         assert len(fake.rests) == 1
         assert not (tmp_path / 'f.mrc.part').exists()
 
-    # test_retries_exhausted: gives up after retries, deletes the part file
+    # test_retries_exhausted: gives up after retries, keeps the part file so a rerun can resume
     def test_retries_exhausted(self, download_ftp, tmp_path: Path) -> None:
         download_ftp(['drop'] * 3)
         with pytest.raises(ConnectionResetError):
             self.run(tmp_path, retries=2)
-        assert not (tmp_path / 'f.mrc.part').exists()
+        assert (tmp_path / 'f.mrc.part').exists()
+        assert not (tmp_path / 'f.mrc').exists()
+
+    # test_rerun_resumes_kept_part: a fresh download after exhaustion asks only for the remaining bytes
+    def test_rerun_resumes_kept_part(self, download_ftp, tmp_path: Path) -> None:
+        fake = download_ftp(['drop'] * 3 + ['ok'])
+        with pytest.raises(ConnectionResetError):
+            self.run(tmp_path, retries=2)
+        have = (tmp_path / 'f.mrc.part').stat().st_size
+        self.run(tmp_path)
+        assert fake.rests[-1] == have
+        assert (tmp_path / 'f.mrc').read_bytes() == DATA
 
     # test_stop_keeps_part: an interrupted download keeps its part file for the next run to resume
     def test_stop_keeps_part(self, download_ftp, tmp_path: Path) -> None:
@@ -118,12 +129,39 @@ class TestDownload:
         assert fake.rests == [None]
         assert (tmp_path / 'f.mrc').read_bytes() == DATA
 
-# test_stop_interrupts_backoff: a set stop turns the first retry into InterruptedError
-def test_stop_interrupts_backoff() -> None:
-    stop = threading.Event()
-    stop.set()
-    # fail: always a transient error
-    def fail() -> None:
-        raise ConnectionResetError
-    with pytest.raises(InterruptedError):
-        empiar._retry(fail, stop, retries=3, backoff=1000)
+    # test_stop_interrupts_backoff: a set stop turns the first retry into InterruptedError
+    def test_stop_interrupts_backoff(self) -> None:
+        stop = threading.Event()
+        stop.set()
+        # fail: always a transient error
+        def fail() -> None:
+            raise ConnectionResetError
+        with pytest.raises(InterruptedError):
+            empiar._retry(fail, stop, retries=3, backoff=1000)
+
+    # test_backoff_is_capped: waits double then stay at MAX_BACKOFF
+    def test_backoff_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        waits: list[float] = []
+        stop = threading.Event()
+        # record: log the requested wait and report no stop
+        monkeypatch.setattr(stop, 'wait', lambda timeout: waits.append(timeout) or False)
+        # fail: always a transient error
+        def fail() -> None:
+            raise ConnectionResetError
+        with pytest.raises(ConnectionResetError):
+            empiar._retry(fail, stop, retries=4, backoff=50)
+        assert waits == [50, 100, empiar.MAX_BACKOFF, empiar.MAX_BACKOFF]
+
+    # test_retry_is_logged: each retry names the file and the error
+    def test_retry_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level('WARNING', logger='streamem')
+        calls = iter([ConnectionResetError('boom'), None])
+
+        # flaky: fail once, then work
+        def flaky() -> None:
+            if (item := next(calls)) is not None:
+                raise item
+
+        empiar._retry(flaky, threading.Event(), retries=1, backoff=0, what='data/f.mrc')
+        assert 'data/f.mrc: retry 1 of 1' in caplog.text
+        assert 'boom' in caplog.text

@@ -3,8 +3,7 @@ streamem: tests for the worker pool
 '''
 
 # Import external dependencies
-import pytest
-import threading
+import pytest, threading
 from pathlib import Path
 
 # Import internal streamem objects
@@ -95,3 +94,32 @@ class TestRunner:
         config.subdatasets[0].max_bytes = 10**9
         with pytest.raises(ValueError):
             run(config, manifest, fake_fetch)
+
+    # test_failure_stage: a failed command is stage exec, a failed download is stage fetch
+    def test_failure_stage(self, make_config, manifest: Manifest, fake_fetch) -> None:
+        run(make_config('exit 1'), manifest, fake_fetch)
+        assert {f[3] for f in manifest.failures()} == {'exec'}
+        manifest.retry_failed()
+
+        # broken: download stand-in that always errors
+        def broken(directory: str, name: str, dest: Path, stop: threading.Event) -> None:
+            raise OSError('network down')
+
+        run(make_config('true'), manifest, broken)
+        assert {f[3] for f in manifest.failures()} == {'fetch'}
+
+    # test_log_appends_across_attempts: a second attempt adds to the log instead of replacing it
+    def test_log_appends_across_attempts(self, tmp_path: Path, make_config, manifest: Manifest, fake_fetch) -> None:
+        run(make_config('echo first; exit 1'), manifest, fake_fetch)
+        manifest.retry_failed()
+        run(make_config('echo second; exit 1'), manifest, fake_fetch)
+        text = (tmp_path / 'out' / 'a' / LOG).read_text()
+        assert text.index('first') < text.index('second')
+        assert text.count(' ---\n') == 2
+
+    # test_failure_is_logged: a failed file is logged with its stage and error
+    def test_failure_is_logged(self, make_config, manifest: Manifest, fake_fetch, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level('INFO', logger='streamem')
+        run(make_config('exit 3'), manifest, fake_fetch)
+        assert 'failed s/a.mrc at exec' in caplog.text
+        assert 'command exit 3 for s/a.mrc' in caplog.text

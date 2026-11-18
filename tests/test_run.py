@@ -85,3 +85,20 @@ class TestExecRun:
         assert self.counts(path)['done'] == 2
         assert (tmp_path / 'out' / 'a').exists()
         assert not (tmp_path / 'out' / 'c').exists()
+
+    # test_only_fetch_leaves_exec_failures: --only fetch requeues download failures but not command failures
+    def test_only_fetch_leaves_exec_failures(self, tmp_path: Path, make_config) -> None:
+        path = self.write(tmp_path, make_config, 'exit 1')
+        runner.invoke(app, ['run', str(path)])
+        assert self.counts(path)['failed'] == 3
+        result = runner.invoke(app, ['run', str(path), '--retry-failed', '--only', 'fetch'])
+        assert self.counts(path)['failed'] == 3
+        assert result.exit_code == 1
+
+    # test_run_log_written: the run log sits beside the config and records each file's outcome
+    def test_run_log_written(self, tmp_path: Path, make_config) -> None:
+        path = self.write(tmp_path, make_config, 'true')
+        runner.invoke(app, ['run', str(path)])
+        text = path.with_suffix('.log').read_text()
+        assert text.count('done s/') == 3
+        assert "'done': 3" in text

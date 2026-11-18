@@ -81,6 +81,12 @@ def _add_branches(tree: Tree, data: object) -> None:
         for i, item in enumerate(data, 1):
             _add_branches(tree.add(f'#{i}'), item)
 
+# _duration: seconds as 1h23m, 4m10s or 7s
+def _duration(seconds: float) -> str:
+    hours, rest = divmod(int(seconds), 3600)
+    minutes, secs = divmod(rest, 60)
+    return f'{hours}h{minutes:02d}m' if hours else f'{minutes}m{secs:02d}s' if minutes else f'{secs}s'
+
 # busy: show a spinner during execution
 def busy(message: str) -> AbstractContextManager:
     return console.status(message)
@@ -208,22 +214,40 @@ def saved(config_path: Path, sbatch_path: Path | None = None) -> None:
 def report_counts(counts: dict[str, int]) -> None:
     console.print(' '.join(f'{status}={n}' for status, n in counts.items()))
 
-# show_status: per sub-dataset counts by status and GB done against total
-def show_status(summary: dict[str, dict[str, tuple[int, int]]]) -> None:
-    table = Table('sub-dataset', *get_args(Status), 'done GB', 'total GB')
+# show_status: per sub-dataset counts by status, GB done against total, mean time per file, retried files and ETA
+def show_status(
+    summary: dict[str, dict[str, tuple[int, int]]],
+    timings: dict[str, tuple[float | None, int]] | None = None,
+    workers: int = 1,
+) -> None:
+    timings = timings or {}
+    table = Table('sub-dataset', *get_args(Status), 'done GB', 'total GB', 's/file', 'retried', 'ETA')
     for sub, by_status in summary.items():
         done_gb = by_status['done'][1] / GB
         total_gb = sum(size for _, size in by_status.values()) / GB
-        table.add_row(sub, *(str(by_status[s][0]) for s in get_args(Status)), f'{done_gb:.1f}', f'{total_gb:.1f}')
+        mean, retried = timings.get(sub, (None, 0))
+        left = by_status['pending'][0] + by_status['running'][0]
+        # ponytail: per sub-dataset ETA treats every worker as free for it, a combined ETA if that misleads
+        eta = '-' if mean is None or not left else _duration(mean * left / workers)
+        table.add_row(
+            sub,
+            *(str(by_status[s][0]) for s in get_args(Status)),
+            f'{done_gb:.1f}',
+            f'{total_gb:.1f}',
+            '-' if mean is None else f'{mean:.0f}',
+            str(retried),
+            eta,
+        )
     console.print(table)
 
-# show_failures: first limit failed files with their errors, then a count of the rest
-def show_failures(failures: list[tuple[str, str, str | None]], limit: int) -> None:
+
+# show_failures: first limit failed files with their stage and error, then a count of the rest
+def show_failures(failures: list[tuple[str, str, str | None, str | None]], limit: int) -> None:
     if not failures:
         return
-    table = Table('sub-dataset', 'file', 'error')
-    for sub, name, error in failures[:limit]:
-        table.add_row(sub, name, error or '')
+    table = Table('sub-dataset', 'file', 'stage', 'error')
+    for sub, name, error, stage in failures[:limit]:
+        table.add_row(sub, name, stage or '', error or '')
     console.print(table)
     if len(failures) > limit:
         console.print(f'... and {len(failures) - limit} more failed')

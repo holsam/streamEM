@@ -35,12 +35,12 @@ A preview of the plan will be shown, then written to a TOML file (default: `stre
 
 ```bash
 streamem run streamem.toml
-streamem run streamem.toml --retry-failed
+streamem run streamem.toml --retry-failed [--only fetch|exec]
 ```
 
-Lists all files, registers them in a SQLite manifest beside the config (default: `streamem.db`), then begins each loop of: downloading file, running command, deleting raw file(s), recordingg outcome.
+Lists all files, registers them in a SQLite manifest beside the config (default: `streamem.db`), then begins each loop of: downloading file, running command, deleting raw file(s), recording outcome. Progress is logged to `streamem.log` beside the config (appended across runs). Each file's command output is in `<outdir>/<file stem>/streamem.log`, appended per attempt.
 
-`run` is resumable, and re-running the same command after an interruption or crash will skip completed (and failed, unless `--retry-failed` used) files, requeue interrupted files and resume processing. `Ctrl+C` stops the ongoing run and requeues any in-progress files. Paired files that are unmatched are skipped with a note if present.
+`run` is resumable, and re-running the same command after an interruption or crash will skip completed (and failed, unless `--retry-failed` used) files, requeue interrupted files and resume processing. `Ctrl+C` stops the ongoing run and requeues any in-progress files. Paired files that are unmatched are skipped with a note if present. `--only fetch` or `--only exec` limits `--retry-failed` to files which previously failed during download/command stages respectively.
 
 ### 3. `status`
 

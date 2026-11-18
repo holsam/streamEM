@@ -3,7 +3,7 @@ streamem: EMPIAR REST API and FTP access
 '''
 
 # Import external dependencies
-import ftplib, json, re, threading, urllib.request
+import ftplib, json, logging, re, threading, urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,13 +15,19 @@ FTP_HOST = 'ftp.ebi.ac.uk'
 API_URL = 'https://www.ebi.ac.uk/empiar/api/entry/EMPIAR-{number}/'
 
 # RETRIES: number of additional attempts tried after a transient FTP failure
-RETRIES = 5
+RETRIES = 8
 
 # BACKOFF: number of seconds before the first retry, doubling each time
 BACKOFF = 5.0
 
+# MAX_BACKOFF: longest wait in seconds between two retries
+MAX_BACKOFF = 120.0
+
 # TRANSIENT: errors which count as a transient FTP failure
 TRANSIENT = (OSError, EOFError, ftplib.error_temp, ftplib.error_proto)
+
+# log: module logger
+log = logging.getLogger(__name__)
 
 # ImageSet: an image set from EMPIAR (i.e. a sub-dataset of entry)
 @dataclass(frozen=True)
@@ -75,16 +81,18 @@ def _fetch_part(entry: str, directory: str, name: str, part: Path, stop: threadi
         raise EOFError(f'{name!r} truncated at {part.stat().st_size} of {total} bytes')
 
 # _retry: call a given function, retrying transient errors with an exponential backoff that stop interrupts
-def _retry[T](fn: Callable[[], T], stop: threading.Event, *, retries: int, backoff: float) -> T:
+def _retry[T](fn: Callable[[], T], stop: threading.Event, *, retries: int, backoff: float, what: str = '') -> T:
     for attempt in range(retries + 1):
         try:
             return fn()
         except InterruptedError:
             raise
-        except TRANSIENT:
+        except TRANSIENT as exc:
             if attempt == retries:
                 raise
-            if stop.wait(backoff * 2**attempt):
+            wait = min(backoff * 2**attempt, MAX_BACKOFF)
+            log.warning('%s: retry %d of %d in %.0fs after %r', what, attempt + 1, retries, wait, exc)
+            if stop.wait(wait):
                 raise InterruptedError from None
     raise AssertionError('unreachable')
 
@@ -105,7 +113,7 @@ def fetch_entry(entry: str) -> tuple[str, list[ImageSet]]:
 
 # list_files: files in an image set directory, sizes parsed from an FTP LIST, with retry support
 def list_files(entry: str, directory: str) -> list[RemoteFile]:
-    return _retry(lambda: _list(entry, directory), threading.Event(), retries=RETRIES, backoff=BACKOFF)
+    return _retry(lambda: _list(entry, directory), threading.Event(), retries=RETRIES, backoff=BACKOFF, what=f'list {directory}')
 
 # match_pairs: files of two sets that share a stem, plus the number of files left without a partner
 def match_pairs(first: list[RemoteFile], second: list[RemoteFile]) -> tuple[list[tuple[RemoteFile, RemoteFile]], int]:
@@ -126,9 +134,9 @@ def download(
 ) -> None:
     part = dest.with_name(dest.name + '.part')
     try:
-        _retry(lambda: _fetch_part(entry, directory, name, part, stop), stop, retries=retries, backoff=backoff)
+        _retry(lambda: _fetch_part(entry, directory, name, part, stop), stop, retries=retries, backoff=backoff, what=f'{directory}/{name}')
         part.rename(dest)
-    except InterruptedError:
+    except TRANSIENT:
         # keep part files as next run can resume from it
         raise
     except BaseException:

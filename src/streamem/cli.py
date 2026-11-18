@@ -5,12 +5,13 @@ streamem: command line interface
 # Import external dependencies
 import typer
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast, Literal
 
 # Import internal streamem objects
 from streamem.plan import plan_run
 from streamem.run import exec_run
 from streamem.status import check_status
+from streamem.utils.manifest import Stage
 
 # app: typer entry point
 app = typer.Typer(
@@ -48,11 +49,17 @@ def run(
         bool,
         typer.Option('--retry-failed', help='Requeue files that previously failed.'),
     ] = False,
+    only: Annotated[
+        Literal['fetch', 'exec'] | None,
+        typer.Option('--only', help='With --retry-failed, only requeue files which failed at this stage.'),
+    ] = None,
 ) -> None:
     '''
     Execute a planned run using a configuration TOML file.
     '''
-    exec_run(config_path=config_path, retry_failed=retry_failed)
+    if only and not retry_failed:
+        raise typer.BadParameter('--only needs --retry-failed')
+    exec_run(config_path=config_path, retry_failed=retry_failed, only=cast(Stage | None, only))
 
 # status: show progress of a run
 @app.command('status')
