@@ -15,10 +15,13 @@ FTP_HOST = 'ftp.ebi.ac.uk'
 API_URL = 'https://www.ebi.ac.uk/empiar/api/entry/EMPIAR-{number}/'
 
 # RETRIES: number of additional attempts tried after a transient FTP failure
-RETRIES = 5
+RETRIES = 8
 
 # BACKOFF: number of seconds before the first retry, doubling each time
 BACKOFF = 5.0
+
+# MAX_BACKOFF: longest wait in seconds between two retries
+MAX_BACKOFF = 120.0
 
 # TRANSIENT: errors which count as a transient FTP failure
 TRANSIENT = (OSError, EOFError, ftplib.error_temp, ftplib.error_proto)
@@ -84,7 +87,7 @@ def _retry[T](fn: Callable[[], T], stop: threading.Event, *, retries: int, backo
         except TRANSIENT:
             if attempt == retries:
                 raise
-            if stop.wait(backoff * 2**attempt):
+            if stop.wait(min(backoff * 2**attempt, MAX_BACKOFF)):
                 raise InterruptedError from None
     raise AssertionError('unreachable')
 

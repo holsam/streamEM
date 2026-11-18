@@ -129,12 +129,25 @@ class TestDownload:
         assert fake.rests == [None]
         assert (tmp_path / 'f.mrc').read_bytes() == DATA
 
-# test_stop_interrupts_backoff: a set stop turns the first retry into InterruptedError
-def test_stop_interrupts_backoff() -> None:
-    stop = threading.Event()
-    stop.set()
-    # fail: always a transient error
-    def fail() -> None:
-        raise ConnectionResetError
-    with pytest.raises(InterruptedError):
-        empiar._retry(fail, stop, retries=3, backoff=1000)
+    # test_stop_interrupts_backoff: a set stop turns the first retry into InterruptedError
+    def test_stop_interrupts_backoff(self) -> None:
+        stop = threading.Event()
+        stop.set()
+        # fail: always a transient error
+        def fail() -> None:
+            raise ConnectionResetError
+        with pytest.raises(InterruptedError):
+            empiar._retry(fail, stop, retries=3, backoff=1000)
+
+    # test_backoff_is_capped: waits double then stay at MAX_BACKOFF
+    def test_backoff_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        waits: list[float] = []
+        stop = threading.Event()
+        # record: log the requested wait and report no stop
+        monkeypatch.setattr(stop, 'wait', lambda timeout: waits.append(timeout) or False)
+        # fail: always a transient error
+        def fail() -> None:
+            raise ConnectionResetError
+        with pytest.raises(ConnectionResetError):
+            empiar._retry(fail, stop, retries=4, backoff=50)
+        assert waits == [50, 100, empiar.MAX_BACKOFF, empiar.MAX_BACKOFF]
