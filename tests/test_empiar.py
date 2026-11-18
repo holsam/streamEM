@@ -93,12 +93,23 @@ class TestDownload:
         assert len(fake.rests) == 1
         assert not (tmp_path / 'f.mrc.part').exists()
 
-    # test_retries_exhausted: gives up after retries, deletes the part file
+    # test_retries_exhausted: gives up after retries, keeps the part file so a rerun can resume
     def test_retries_exhausted(self, download_ftp, tmp_path: Path) -> None:
         download_ftp(['drop'] * 3)
         with pytest.raises(ConnectionResetError):
             self.run(tmp_path, retries=2)
-        assert not (tmp_path / 'f.mrc.part').exists()
+        assert (tmp_path / 'f.mrc.part').exists()
+        assert not (tmp_path / 'f.mrc').exists()
+
+    # test_rerun_resumes_kept_part: a fresh download after exhaustion asks only for the remaining bytes
+    def test_rerun_resumes_kept_part(self, download_ftp, tmp_path: Path) -> None:
+        fake = download_ftp(['drop'] * 3 + ['ok'])
+        with pytest.raises(ConnectionResetError):
+            self.run(tmp_path, retries=2)
+        have = (tmp_path / 'f.mrc.part').stat().st_size
+        self.run(tmp_path)
+        assert fake.rests[-1] == have
+        assert (tmp_path / 'f.mrc').read_bytes() == DATA
 
     # test_stop_keeps_part: an interrupted download keeps its part file for the next run to resume
     def test_stop_keeps_part(self, download_ftp, tmp_path: Path) -> None:

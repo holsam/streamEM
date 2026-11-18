@@ -128,7 +128,7 @@ def download(
     try:
         _retry(lambda: _fetch_part(entry, directory, name, part, stop), stop, retries=retries, backoff=backoff)
         part.rename(dest)
-    except InterruptedError:
+    except TRANSIENT:
         # keep part files as next run can resume from it
         raise
     except BaseException:
