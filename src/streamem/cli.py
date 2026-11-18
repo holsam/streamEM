@@ -53,13 +53,17 @@ def run(
         Literal['fetch', 'exec'] | None,
         typer.Option('--only', help='With --retry-failed, only requeue files which failed at this stage.'),
     ] = None,
+    mirror: Annotated[
+        bool,
+        typer.Option('--mirror', help='Download over HTTPS from the PDBj mirror instead of EBI FTP.'),
+    ] = False,
 ) -> None:
     '''
     Execute a planned run using a configuration TOML file.
     '''
     if only and not retry_failed:
         raise typer.BadParameter('--only needs --retry-failed')
-    exec_run(config_path=config_path, retry_failed=retry_failed, only=cast(Stage | None, only))
+    exec_run(config_path=config_path, retry_failed=retry_failed, only=cast(Stage | None, only), mirror=mirror)
 
 # status: show progress of a run
 @app.command('status')

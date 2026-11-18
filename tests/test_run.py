@@ -17,7 +17,7 @@ from streamem.utils.manifest import Manifest
 runner = CliRunner()
 
 # fake_download: stands in for the FTP download, writes the file name into dest
-def fake_download(entry: str, directory: str, name: str, dest: Path, stop: object) -> None:
+def fake_download(entry: str, directory: str, name: str, dest: Path, stop: object, *, mirror: bool = False) -> None:
     dest.write_text(name)
 
 # TestExecRun: the run command against a fake EMPIAR and a stand-in download
