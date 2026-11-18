@@ -6,6 +6,7 @@ streamem: worker pool that downloads, processes and deletes one file at a time
 import os, shlex, signal, subprocess, threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 # Import internal streamem objects
@@ -111,7 +112,10 @@ def _exec(cmd: str, file: Path, outdir: Path, name: str, pair: Path | None, stop
     env = {**os.environ, 'STREAMEM_FILE': str(file), 'STREAMEM_OUTDIR': str(outdir), 'STREAMEM_NAME': name}
     if pair is not None:
         env['STREAMEM_PAIR'] = str(pair)
-    with (outdir / LOG).open('wb') as log:
+    with (outdir / LOG).open('ab') as log:
+        # one dated header per attempt, a retry appends rather than overwriting the last failure
+        log.write(f'--- {datetime.now().isoformat(timespec='seconds')} ---\n'.encode())
+        log.flush()
         proc = subprocess.Popen(cmd, shell=True, env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         while True:
             try:

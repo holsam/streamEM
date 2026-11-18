@@ -108,3 +108,12 @@ class TestRunner:
 
         run(make_config('true'), manifest, broken)
         assert {f[3] for f in manifest.failures()} == {'fetch'}
+
+    # test_log_appends_across_attempts: a second attempt adds to the log instead of replacing it
+    def test_log_appends_across_attempts(self, tmp_path: Path, make_config, manifest: Manifest, fake_fetch) -> None:
+        run(make_config('echo first; exit 1'), manifest, fake_fetch)
+        manifest.retry_failed()
+        run(make_config('echo second; exit 1'), manifest, fake_fetch)
+        text = (tmp_path / 'out' / 'a' / LOG).read_text()
+        assert text.index('first') < text.index('second')
+        assert text.count(' ---\n') == 2
