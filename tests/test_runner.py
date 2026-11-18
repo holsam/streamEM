@@ -95,3 +95,16 @@ class TestRunner:
         config.subdatasets[0].max_bytes = 10**9
         with pytest.raises(ValueError):
             run(config, manifest, fake_fetch)
+
+    # test_failure_stage: a failed command is stage exec, a failed download is stage fetch
+    def test_failure_stage(self, make_config, manifest: Manifest, fake_fetch) -> None:
+        run(make_config('exit 1'), manifest, fake_fetch)
+        assert {f[3] for f in manifest.failures()} == {'exec'}
+        manifest.retry_failed()
+
+        # broken: download stand-in that always errors
+        def broken(directory: str, name: str, dest: Path, stop: threading.Event) -> None:
+            raise OSError('network down')
+
+        run(make_config('true'), manifest, broken)
+        assert {f[3] for f in manifest.failures()} == {'fetch'}

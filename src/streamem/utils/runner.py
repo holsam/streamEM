@@ -10,7 +10,7 @@ from pathlib import Path
 
 # Import internal streamem objects
 from streamem.utils.config import Config, SubDataset, footprint
-from streamem.utils.manifest import Manifest, Status
+from streamem.utils.manifest import Manifest, Stage, Status
 from streamem.plan import _free_bytes, _max_workers
 
 # LOG: per-file command output, written inside that file's outdir
@@ -72,6 +72,7 @@ def _process(
     stem = Path(name).stem
     outdir = sub.outdir / stem
     status: Status
+    stage: Stage = 'fetch'
     error: str | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +81,7 @@ def _process(
         if partner is not None and pair_path is not None:
             pair_path.parent.mkdir(parents=True, exist_ok=True)
             fetch(partner.directory, pair, pair_path, stop)
+        stage = 'exec'
         code = _exec(_expand(sub.cmd, file=path, outdir=outdir, name=stem, pair=pair_path), path, outdir, stem, pair_path, stop)
         status = 'done' if code == 0 else 'failed'
         error = None if code == 0 else f'exit code {code}, see {outdir / LOG}'
@@ -93,7 +95,7 @@ def _process(
     if stop.is_set() and status == 'failed':
         # killed by the stop request, not a real failure
         status, error = 'pending', None
-    manifest.finish(sub.name, name, status, error)
+    manifest.finish(sub.name, name, status, error, stage if status == 'failed' else None)
 
 # _expand: substitute placeholders by plain replace so shell braces survive
 def _expand(cmd: str, *, file: Path, outdir: Path, name: str, pair: Path | None = None) -> str:
