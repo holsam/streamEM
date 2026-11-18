@@ -3,7 +3,7 @@ streamem: tests for EMPIAR REST and FTP access
 '''
 
 # Import external dependencies
-import ftplib, pytest, threading
+import ftplib, pytest, threading, urllib.error
 from pathlib import Path
 
 # Import internal streamem objects
@@ -165,3 +165,70 @@ class TestDownload:
         empiar._retry(flaky, threading.Event(), retries=1, backoff=0, what='data/f.mrc')
         assert 'data/f.mrc: retry 1 of 1' in caplog.text
         assert 'boom' in caplog.text
+
+# TestMirrorDownload: HTTPS mirror retry, resume and verification
+class TestMirrorDownload:
+    # run: download f.mrc into tmp_path with the given scripted modes
+    @staticmethod
+    def run(tmp_path: Path, stop: threading.Event | None = None, **kwargs: int) -> None:
+        empiar.download('1', 'data/s', 'f.mrc', tmp_path / 'f.mrc', stop or threading.Event(), mirror=True, backoff=0, **kwargs)
+
+    # test_resume_after_drop: second attempt asks for the remaining bytes only
+    def test_resume_after_drop(self, download_http, tmp_path: Path) -> None:
+        fake = download_http(['drop', 'ok'])
+        self.run(tmp_path)
+        assert fake.starts == [0, 5]
+        assert (tmp_path / 'f.mrc').read_bytes() == DATA
+        assert not (tmp_path / 'f.mrc.part').exists()
+
+    # test_truncated_is_retried: a short but clean transfer fails verification and resumes
+    def test_truncated_is_retried(self, download_http, tmp_path: Path) -> None:
+        fake = download_http(['short', 'ok'])
+        self.run(tmp_path)
+        assert fake.starts == [0, 9]
+        assert (tmp_path / 'f.mrc').read_bytes() == DATA
+
+    # test_permanent_error_not_retried: a 404 fails at once and leaves no part file
+    def test_permanent_error_not_retried(self, download_http, tmp_path: Path) -> None:
+        fake = download_http(['perm'])
+        with pytest.raises(urllib.error.HTTPError):
+            self.run(tmp_path)
+        assert len(fake.starts) == 1
+        assert not (tmp_path / 'f.mrc.part').exists()
+
+    # test_retries_exhausted: gives up after retries, keeps the part file so a rerun can resume
+    def test_retries_exhausted(self, download_http, tmp_path: Path) -> None:
+        download_http(['drop'] * 3)
+        with pytest.raises(ConnectionResetError):
+            self.run(tmp_path, retries=2)
+        assert (tmp_path / 'f.mrc.part').exists()
+        assert not (tmp_path / 'f.mrc').exists()
+
+    # test_rerun_resumes_kept_part: a fresh download after exhaustion asks only for the remaining bytes
+    def test_rerun_resumes_kept_part(self, download_http, tmp_path: Path) -> None:
+        fake = download_http(['drop'] * 3 + ['ok'])
+        with pytest.raises(ConnectionResetError):
+            self.run(tmp_path, retries=2)
+        have = (tmp_path / 'f.mrc.part').stat().st_size
+        self.run(tmp_path)
+        assert fake.starts[-1] == have
+        assert (tmp_path / 'f.mrc').read_bytes() == DATA
+
+    # test_stop_keeps_part: an interrupted download keeps its part file for the next run to resume
+    def test_stop_keeps_part(self, download_http, tmp_path: Path) -> None:
+        download_http(['ok'])
+        stop = threading.Event()
+        stop.set()
+        with pytest.raises(InterruptedError):
+            self.run(tmp_path, stop)
+        assert (tmp_path / 'f.mrc.part').exists()
+        assert not (tmp_path / 'f.mrc').exists()
+
+    # test_oversized_part_restarts: a part longer than the remote file is discarded and fetched from the start
+    def test_oversized_part_restarts(self, download_http, tmp_path: Path) -> None:
+        fake = download_http(['ok'])
+        (tmp_path / 'f.mrc.part').write_bytes(b'x' * 20)
+        self.run(tmp_path)
+        # first request at 20 gets a 416, then the part is dropped and refetched from 0
+        assert fake.starts == [20, 0]
+        assert (tmp_path / 'f.mrc').read_bytes() == DATA

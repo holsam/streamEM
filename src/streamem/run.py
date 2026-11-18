@@ -31,14 +31,14 @@ def _open_log(path: Path) -> logging.Handler:
     return handler
 
 # exec_run: process every pending file of a config, resuming from its manifest
-def exec_run(config_path: Path, retry_failed: bool = False, only: Stage | None = None) -> None:
+def exec_run(config_path: Path, retry_failed: bool = False, only: Stage | None = None, *, mirror: bool = False) -> None:
     with framed():
         config = load_config(config_path)
         number = entry_number(config.entry)
         manifest = Manifest(config_path.with_suffix('.db'))
         handler = _open_log(config_path.with_suffix('.log'))
         try:
-            log.info('run %s retry_failed=%s only=%s', config_path.name, retry_failed, only)
+            log.info('run %s retry_failed=%s only=%s mirror=%s', config_path.name, retry_failed, only, mirror)
             notes: list[str] = []
             with busy('Listing files...'):
                 for sub in config.primaries():
@@ -56,7 +56,7 @@ def exec_run(config_path: Path, retry_failed: bool = False, only: Stage | None =
             if retry_failed:
                 manifest.retry_failed(only)
             log.info('begin %s', manifest.counts())
-            runner.run(config, manifest, partial(download, number), report=report_counts)
+            runner.run(config, manifest, partial(download, number, mirror=mirror), report=report_counts)
             counts = manifest.counts()
             log.info('end %s', counts)
             report_counts(counts)

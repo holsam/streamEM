@@ -3,7 +3,7 @@ streamem: shared test fixtures
 '''
 
 # Import external dependencies
-import ftplib, io, json, pytest
+import ftplib, io, json, pytest, urllib.error
 from collections.abc import Callable
 from pathlib import Path
 from rich.console import Console
@@ -96,6 +96,45 @@ class FakeFTP:
             raise ConnectionResetError
         callback(chunk[:-1] if mode == 'short' else chunk)
 
+# FakeHTTP: mock urlopen serving DATA with Range support, scripted behaviour per request
+class FakeHTTP:
+    # modes are consumed one per request: ok, drop (half then reset), short (all but one byte), perm (404), norange (200 with full body)
+    def __init__(self, modes: list[str]) -> None:
+        self.modes = modes
+        self.starts: list[int] = []
+    def __call__(self, request: object, timeout: float = 30) -> '_Response':
+        start = int(request.get_header('Range', 'bytes=0-')[6:-1])
+        self.starts.append(start)
+        if start > len(DATA):
+            raise urllib.error.HTTPError(request.full_url, 416, 'range', {}, None)
+        mode = self.modes.pop(0)
+        if mode == 'perm':
+            raise urllib.error.HTTPError(request.full_url, 404, 'not found', {}, None)
+        if mode == 'norange':
+            start = 0
+        body = DATA[start:]
+        return _Response(body, 206 if start else 200, drop=mode == 'drop', short=mode == 'short')
+
+# _Response: context-manager response yielding body, optionally failing midway or ending a byte early
+class _Response:
+    def __init__(self, body: bytes, status: int, *, drop: bool, short: bool) -> None:
+        self.status = status
+        self.headers = {'Content-Length': str(len(body))}
+        self.body = body[:-1] if short else body
+        self.drop = drop
+        self.sent = False
+    def __enter__(self) -> '_Response':
+        return self
+    def __exit__(self, *args: object) -> bool:
+        return False
+    def read(self, size: int) -> bytes:
+        if self.sent:
+            if self.drop:
+                raise ConnectionResetError
+            return b''
+        self.sent = True
+        return self.body[: len(self.body) // 2] if self.drop else self.body
+
 # ask: replace every questionary prompt with scripted answers
 @pytest.fixture
 def ask(monkeypatch: pytest.MonkeyPatch) -> Prompts:
@@ -125,6 +164,15 @@ def fake_ftp(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[str]], FakeFTP]:
 def fake_urlopen(monkeypatch: pytest.MonkeyPatch) -> Callable[[dict], None]:
     def install(payload: dict) -> None:
         monkeypatch.setattr(empiar.urllib.request, 'urlopen', lambda url, timeout=30: io.BytesIO(json.dumps(payload).encode()))
+    return install
+
+# download_http: installer to swap urlopen for a FakeHTTP scripted with the given download modes
+@pytest.fixture
+def download_http(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[str]], FakeHTTP]:
+    def install(modes: list[str]) -> FakeHTTP:
+        fake = FakeHTTP(modes)
+        monkeypatch.setattr(empiar.urllib.request, 'urlopen', fake)
+        return fake
     return install
 
 # download_ftp: installer to swap ftplib.FTP for a FakeFTP scripted with the given download modes
