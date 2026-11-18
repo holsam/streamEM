@@ -3,7 +3,7 @@ streamem: tests for the progress manifest
 '''
 
 # Import external dependencies
-import threading
+import sqlite3, threading
 from pathlib import Path
 
 # Import internal streamem objects
@@ -75,7 +75,7 @@ class TestManifest:
         assert summary['done'] == (1, 10)
         assert summary['failed'] == (1, 20)
         assert summary['pending'] == (0, 0)
-        assert manifest.failures() == [('s', 'b', 'boom')]
+        assert manifest.failures() == [('s', 'b', 'boom', None)]
 
     # test_summary_per_sub_dataset: each sub-dataset gets its own row
     def test_summary_per_sub_dataset(self, tmp_path: Path) -> None:
@@ -89,3 +89,48 @@ class TestManifest:
         manifest.claim()
         assert Manifest(tmp_path / 'm.db', recover=False).counts()['running'] == 1
         assert Manifest(tmp_path / 'm.db').counts()['pending'] == 2
+
+    # test_finish_records_stage: a failure keeps the stage it was given
+    def test_finish_records_stage(self, manifest: Manifest) -> None:
+        manifest.claim()
+        manifest.finish('s', 'a.mrc', 'failed', 'boom', 'fetch')
+        assert manifest.failures() == [('s', 'a.mrc', 'boom', 'fetch')]
+
+    # test_retry_only_stage: only failures at the given stage are requeued, others stay failed
+    def test_retry_only_stage(self, manifest: Manifest) -> None:
+        manifest.claim()
+        manifest.finish('s', 'a.mrc', 'failed', 'x', 'fetch')
+        manifest.claim()
+        manifest.finish('s', 'b.mrc', 'failed', 'y', 'exec')
+        manifest.retry_failed('fetch')
+        assert manifest.counts() == {'pending': 1, 'running': 0, 'done': 0, 'failed': 1}
+        assert manifest.failures() == [('s', 'b.mrc', 'y', 'exec')]
+
+    # test_timings: mean seconds per done file, and a file claimed twice counts as retried
+    def test_timings(self, manifest: Manifest, monkeypatch: pytest.MonkeyPatch) -> None:
+        from streamem.utils import manifest as manifest_module
+        clock = iter([100.0, 104.0, 200.0, 210.0])
+        monkeypatch.setattr(manifest_module, 'time', lambda: next(clock))
+        manifest.claim()
+        manifest.finish('s', 'a.mrc', 'done')
+        manifest.claim()
+        manifest.finish('s', 'b.mrc', 'done')
+        assert manifest.timings() == {'s': (7.0, 0)}
+
+    # test_retried_counts_attempts: a requeued file claimed again has two attempts
+    def test_retried_counts_attempts(self, manifest: Manifest) -> None:
+        manifest.claim()
+        manifest.finish('s', 'a.mrc', 'failed', 'boom', 'exec')
+        manifest.retry_failed()
+        manifest.claim()
+        assert manifest.timings()['s'][1] == 1
+
+    # test_old_database_is_migrated: a v0.2 table gains the new columns and works as normal
+    def test_old_database_is_migrated(self, tmp_path: Path) -> None:
+        db = sqlite3.connect(tmp_path / 'old.db')
+        db.execute('CREATE TABLE files (sub TEXT, name TEXT, size INTEGER, status TEXT NOT NULL, error TEXT, pair TEXT, PRIMARY KEY (sub, name))')
+        db.execute("INSERT INTO files VALUES ('s', 'a', 1, 'pending', NULL, NULL)")
+        db.commit()
+        db.close()
+        reopened = Manifest(tmp_path / 'old.db')
+        assert reopened.claim() == ('s', 'a')

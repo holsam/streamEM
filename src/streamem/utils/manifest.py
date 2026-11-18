@@ -5,13 +5,21 @@ streamem: SQLite manifest of per-file progress
 # Import external dependencies
 import sqlite3, threading
 from pathlib import Path
+from time import time
 from typing import Literal, get_args
 
 # Import internal streamem objects
 from streamem.utils.empiar import RemoteFile
 
+
 # Status: lifecycle of one file
 Status = Literal['pending', 'running', 'done', 'failed']
+
+# Stage: where a file failed, downloading (fetch) or running the command (exec)
+Stage = Literal['fetch', 'exec']
+
+# COLUMNS: columns added after v0.2.x
+COLUMNS = {'stage': 'TEXT', 'started': 'REAL', 'finished': 'REAL', 'attempts': 'INTEGER NOT NULL DEFAULT 0'}
 
 # Manifest: thread-safe progress table, one row per remote file
 class Manifest:
@@ -25,6 +33,10 @@ class Manifest:
                 'CREATE TABLE IF NOT EXISTS files '
                 '(sub TEXT, name TEXT, size INTEGER, status TEXT NOT NULL, error TEXT, pair TEXT, PRIMARY KEY (sub, name))'
             )
+            have = {row[1] for row in self._db.execute('PRAGMA table_info(files)')}
+            for column, declaration in COLUMNS.items():
+                if column not in have:
+                    self._db.execute(f'ALTER TABLE files ADD COLUMN {column} {declaration}')
             # a row still running means the last run died mid-file, but a reader must not touch a live run
             if recover:
                 self._db.execute('UPDATE files SET status = ? WHERE status = ?', ('pending', 'running'))
@@ -54,24 +66,22 @@ class Manifest:
     # claim: atomically take the next pending file and mark it running
     def claim(self) -> tuple[str, str] | None:
         with self._lock, self._db:
-            row = self._db.execute(
-                'SELECT sub, name FROM files WHERE status = ? ORDER BY rowid LIMIT 1', ('pending',)
-            ).fetchone()
+            row = self._db.execute('SELECT sub, name FROM files WHERE status = ? ORDER BY rowid LIMIT 1', ('pending',)).fetchone()
             if row is not None:
-                self._db.execute('UPDATE files SET status = ? WHERE sub = ? AND name = ?', ('running', *row))
+                self._db.execute('UPDATE files SET status = ?, started = ?, finished = NULL, attempts = attempts + 1 WHERE sub = ? AND name = ?', ('running', time(), *row))
         return row
 
-    # finish: record the outcome of a claimed file
-    def finish(self, sub: str, name: str, status: Status, error: str | None = None) -> None:
+    # finish: record the outcome of a claimed file, stage says where a failure happened
+    def finish(self, sub: str, name: str, status: Status, error: str | None = None, stage: Stage | None = None) -> None:
+        # a file requeued by a stop request has no finish time
+        finished = time() if status in ('done', 'failed') else None
         with self._lock, self._db:
-            self._db.execute(
-                'UPDATE files SET status = ?, error = ? WHERE sub = ? AND name = ?', (status, error, sub, name)
-            )
+            self._db.execute('UPDATE files SET status = ?, error = ?, stage = ?, finished = ? WHERE sub = ? AND name = ?', (status, error, stage, finished, sub, name))
 
-    # retry_failed: put failed files back in the queue
-    def retry_failed(self) -> None:
+    # retry_failed: put failed files back in the queue, only those that failed at the given stage when set
+    def retry_failed(self, only: Stage | None = None) -> None:
         with self._lock, self._db:
-            self._db.execute('UPDATE files SET status = ?, error = NULL WHERE status = ?', ('pending', 'failed'))
+            self._db.execute('UPDATE files SET status = ?, error = NULL, stage = NULL WHERE status = ? AND (? IS NULL OR stage = ?)', ('pending', 'failed', only, only))
 
     # counts: number of files in each status, zero when absent
     def counts(self) -> dict[str, int]:
@@ -90,9 +100,13 @@ class Manifest:
             out.setdefault(sub, {s: (0, 0) for s in get_args(Status)})[status] = (n, size)
         return out
 
-    # failures: (sub-dataset, file, error) for every failed file
-    def failures(self) -> list[tuple[str, str, str | None]]:
+    # failures: (sub-dataset, file, error, stage) for every failed file
+    def failures(self) -> list[tuple[str, str, str | None, str | None]]:
         with self._lock:
-            return self._db.execute(
-                'SELECT sub, name, error FROM files WHERE status = ? ORDER BY rowid', ('failed',)
-            ).fetchall()
+            return self._db.execute('SELECT sub, name, error, stage FROM files WHERE status = ? ORDER BY rowid', ('failed',)).fetchall()
+
+    # timings: per sub-dataset (mean seconds per done file or None, files that needed more than one attempt)
+    def timings(self) -> dict[str, tuple[float | None, int]]:
+        with self._lock:
+            rows = self._db.execute("SELECT sub, AVG(CASE WHEN status = 'done' THEN finished - started END), COALESCE(SUM(attempts > 1), 0) FROM files GROUP BY sub").fetchall()
+        return {sub: (mean, retried) for sub, mean, retried in rows}

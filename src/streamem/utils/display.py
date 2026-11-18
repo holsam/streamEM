@@ -217,13 +217,13 @@ def show_status(summary: dict[str, dict[str, tuple[int, int]]]) -> None:
         table.add_row(sub, *(str(by_status[s][0]) for s in get_args(Status)), f'{done_gb:.1f}', f'{total_gb:.1f}')
     console.print(table)
 
-# show_failures: first limit failed files with their errors, then a count of the rest
-def show_failures(failures: list[tuple[str, str, str | None]], limit: int) -> None:
+# show_failures: first limit failed files with their stage and error, then a count of the rest
+def show_failures(failures: list[tuple[str, str, str | None, str | None]], limit: int) -> None:
     if not failures:
         return
-    table = Table('sub-dataset', 'file', 'error')
-    for sub, name, error in failures[:limit]:
-        table.add_row(sub, name, error or '')
+    table = Table('sub-dataset', 'file', 'stage', 'error')
+    for sub, name, error, stage in failures[:limit]:
+        table.add_row(sub, name, stage or '', error or '')
     console.print(table)
     if len(failures) > limit:
         console.print(f'... and {len(failures) - limit} more failed')
