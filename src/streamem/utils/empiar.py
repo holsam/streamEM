@@ -153,7 +153,7 @@ def match_pairs(first: list[RemoteFile], second: list[RemoteFile]) -> tuple[list
     pairs = [(f, by_stem[Path(f.name).stem]) for f in first if Path(f.name).stem in by_stem]
     return pairs, len(first) + len(second) - 2 * len(pairs)
 
-# download: fetch one file to dest, from EBI FTP or (with mirror) the PDBj HTTPS mirror, with resume/retry support, with resume/retry support, aborting once stop is set
+# download: fetch one file to dest, from EBI FTP or (with mirror) the PDBj HTTPS mirror, with resume/retry support, falling back to the other source after half the retries or a permanent error, aborting once stop is set
 def download(
     entry: str,
     directory: str,
@@ -166,9 +166,19 @@ def download(
     backoff: float = BACKOFF,
 ) -> None:
     part = dest.with_name(dest.name + '.part')
-    fetch = _fetch_http if mirror else _fetch_ftp
+    first, second = (_fetch_http, _fetch_ftp) if mirror else (_fetch_ftp, _fetch_http)
+    # first half of the attempts use the chosen source, the rest fall back to the other
+    split = max(1, (retries + 1) // 2)
+    what = f'{directory}/{name}'
     try:
-        _retry(lambda: fetch(entry, directory, name, part, stop), stop, retries=retries, backoff=backoff, what=f'{directory}/{name}')
+        try:
+            _retry(lambda: first(entry, directory, name, part, stop), stop, retries=split - 1, backoff=backoff, what=what)
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            # exhausted transient retries or a permanent error: either way try the other source
+            log.warning('%s: falling back to %s after %r', what, second.__name__, exc)
+            _retry(lambda: second(entry, directory, name, part, stop), stop, retries=max(0, retries - split), backoff=backoff, what=what)
         part.rename(dest)
     except TRANSIENT:
         # keep part files as next run can resume from it

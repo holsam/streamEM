@@ -101,4 +101,4 @@ class TestExecRun:
         runner.invoke(app, ['run', str(path)])
         text = path.with_suffix('.log').read_text()
         assert text.count('done s/') == 3
-        assert "'done': 3" in text
+        assert 'done=3' in text
