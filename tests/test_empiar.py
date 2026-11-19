@@ -85,16 +85,27 @@ class TestDownload:
         assert fake.rests == [None, 9]
         assert (tmp_path / 'f.mrc').read_bytes() == DATA
 
-    # test_permanent_error_not_retried: error_perm fails at once and leaves no part file
-    def test_permanent_error_not_retried(self, download_ftp, tmp_path: Path) -> None:
-        fake = download_ftp(['perm'])
+    # test_permanent_error_falls_back: error_perm skips the remaining FTP attempts and goes straight to the mirror
+    def test_permanent_error_falls_back(self, download_ftp, download_http, tmp_path: Path) -> None:
+        ftp = download_ftp(['perm'])
+        http = download_http(['ok'])
+        self.run(tmp_path)
+        assert len(ftp.rests) == 1
+        assert len(http.starts) == 1
+        assert (tmp_path / 'f.mrc').read_bytes() == DATA
+
+    # test_permanent_error_both_sources: error_perm on both sources fails after one try each and leaves no part file
+    def test_permanent_error_both_sources(self, download_ftp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(empiar, '_fetch_http', empiar._fetch_ftp)
+        fake = download_ftp(['perm', 'perm'])
         with pytest.raises(ftplib.error_perm):
             self.run(tmp_path)
-        assert len(fake.rests) == 1
+        assert len(fake.rests) == 2
         assert not (tmp_path / 'f.mrc.part').exists()
 
     # test_retries_exhausted: gives up after retries, keeps the part file so a rerun can resume
-    def test_retries_exhausted(self, download_ftp, tmp_path: Path) -> None:
+    def test_retries_exhausted(self, download_ftp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(empiar, '_fetch_http', empiar._fetch_ftp)
         download_ftp(['drop'] * 3)
         with pytest.raises(ConnectionResetError):
             self.run(tmp_path, retries=2)
@@ -102,13 +113,23 @@ class TestDownload:
         assert not (tmp_path / 'f.mrc').exists()
 
     # test_rerun_resumes_kept_part: a fresh download after exhaustion asks only for the remaining bytes
-    def test_rerun_resumes_kept_part(self, download_ftp, tmp_path: Path) -> None:
+    def test_rerun_resumes_kept_part(self, download_ftp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(empiar, '_fetch_http', empiar._fetch_ftp)
         fake = download_ftp(['drop'] * 3 + ['ok'])
         with pytest.raises(ConnectionResetError):
             self.run(tmp_path, retries=2)
         have = (tmp_path / 'f.mrc.part').stat().st_size
         self.run(tmp_path)
         assert fake.rests[-1] == have
+        assert (tmp_path / 'f.mrc').read_bytes() == DATA
+
+    # test_falls_back_to_mirror: after half the attempts fail on FTP, the rest use the mirror
+    def test_falls_back_to_mirror(self, download_ftp, download_http, tmp_path: Path) -> None:
+        ftp = download_ftp(['drop'] * 2)
+        http = download_http(['ok'])
+        self.run(tmp_path, retries=3)
+        assert len(ftp.rests) == 2
+        assert len(http.starts) == 1
         assert (tmp_path / 'f.mrc').read_bytes() == DATA
 
     # test_stop_keeps_part: an interrupted download keeps its part file for the next run to resume
@@ -188,16 +209,18 @@ class TestMirrorDownload:
         assert fake.starts == [0, 9]
         assert (tmp_path / 'f.mrc').read_bytes() == DATA
 
-    # test_permanent_error_not_retried: a 404 fails at once and leaves no part file
-    def test_permanent_error_not_retried(self, download_http, tmp_path: Path) -> None:
-        fake = download_http(['perm'])
+    # test_permanent_error_both_sources: a 404 on both sources fails after one try each and leaves no part file
+    def test_permanent_error_both_sources(self, download_http, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(empiar, '_fetch_ftp', empiar._fetch_http)
+        fake = download_http(['perm', 'perm'])
         with pytest.raises(urllib.error.HTTPError):
             self.run(tmp_path)
-        assert len(fake.starts) == 1
+        assert len(fake.starts) == 2
         assert not (tmp_path / 'f.mrc.part').exists()
 
     # test_retries_exhausted: gives up after retries, keeps the part file so a rerun can resume
-    def test_retries_exhausted(self, download_http, tmp_path: Path) -> None:
+    def test_retries_exhausted(self, download_http, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(empiar, '_fetch_ftp', empiar._fetch_http)
         download_http(['drop'] * 3)
         with pytest.raises(ConnectionResetError):
             self.run(tmp_path, retries=2)
@@ -205,7 +228,8 @@ class TestMirrorDownload:
         assert not (tmp_path / 'f.mrc').exists()
 
     # test_rerun_resumes_kept_part: a fresh download after exhaustion asks only for the remaining bytes
-    def test_rerun_resumes_kept_part(self, download_http, tmp_path: Path) -> None:
+    def test_rerun_resumes_kept_part(self, download_http, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(empiar, '_fetch_ftp', empiar._fetch_http)
         fake = download_http(['drop'] * 3 + ['ok'])
         with pytest.raises(ConnectionResetError):
             self.run(tmp_path, retries=2)

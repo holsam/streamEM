@@ -21,6 +21,10 @@ LOG_FORMAT = '%(asctime)s %(levelname)s [%(threadName)s] %(message)s'
 # log: module logger
 log = logging.getLogger(__name__)
 
+# _fmt_counts: status counts as 'pending=2 running=0 done=0 failed=0'
+def _fmt_counts(counts: dict[str, int]) -> str:
+    return ' '.join(f'{status}={n}' for status, n in counts.items())
+
 # _open_log: append streamem loggers' output to path, returns the handler so the caller can detach it
 def _open_log(path: Path) -> logging.Handler:
     handler = logging.FileHandler(path)
@@ -55,10 +59,10 @@ def exec_run(config_path: Path, retry_failed: bool = False, only: Stage | None =
                 say(note)
             if retry_failed:
                 manifest.retry_failed(only)
-            log.info('begin %s', manifest.counts())
+            log.info('begin %s', _fmt_counts(manifest.counts()))
             runner.run(config, manifest, partial(download, number, mirror=mirror), report=report_counts)
             counts = manifest.counts()
-            log.info('end %s', counts)
+            log.info('end %s', _fmt_counts(counts))
             report_counts(counts)
         finally:
             logging.getLogger('streamem').removeHandler(handler)

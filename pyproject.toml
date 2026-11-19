@@ -1,6 +1,6 @@
 [project]
 name = "streamem"
-version = "0.3.1"
+version = "0.4.0"
 description = "Chunked processing of EMPIAR data."
 readme = "README.md"
 authors = [
