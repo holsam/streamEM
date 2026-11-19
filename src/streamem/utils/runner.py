@@ -37,7 +37,7 @@ def run(
     if config.workers > safe:
         raise ValueError(f'{config.workers} workers exceed the {safe} that fit the disk budget')
     subs = {s.name: s for s in config.subdatasets}
-    with ThreadPoolExecutor(config.workers) as pool:
+    with ThreadPoolExecutor(config.workers, thread_name_prefix='worker') as pool:
         futures = [pool.submit(_work, config, subs, manifest, fetch, stop, report) for _ in range(config.workers)]
         try:
             for future in futures:
